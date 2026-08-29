@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+ENV/
+.ENV/
+
+# 数据库
+*.db
+*.sqlite
+*.sqlite3
+postgres_data/
+
+# 环境配置
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
+
+# Android
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+android/captures/
+android/.cxx/
+android/*.iml
+android/.idea/
+
+# iOS (备用)
+ios/Pods/
+ios/build/
+
+# HA plugin 运行时
+ha-plugin/custom_components/*/__pycache__/
+
+# 项目特定
+backend/data/
+backend/.alembic/
+infra/ssl/certs/
