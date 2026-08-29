@@ -26,3 +26,6 @@ htmlcov/
 # Test artifacts
 test.db
 test_*.db
+
+# Production secrets
+.env.production
