@@ -100,9 +100,19 @@ if command -v docker &>/dev/null; then
     log "🐳 Docker 已安装: $(docker --version)"
 else
     log "🐳 安装 Docker..."
+    # 确保 docker 组存在（某些 Docker 安装脚本不会自动创建）
+    groupadd -f docker
+
     curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-    sh /tmp/get-docker.sh
+    sh /tmp/get-docker.sh --dry-run   # 先 dry-run 看会装什么
+    sh /tmp/get-docker.sh             # 实际安装
+
+    # 把 deploy 加入 docker 组（免 sudo）
+    # 再次确保 docker 组存在（Docker 安装可能清理）
+    groupadd -f docker
     usermod -aG docker $DEPLOY_USER
+
+    log "    ℹ deploy 用户需要重新登录才能免 sudo 用 docker"
 fi
 
 # ---- 8. 项目目录 ----
