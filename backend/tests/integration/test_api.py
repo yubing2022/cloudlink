@@ -464,14 +464,22 @@ async def main() -> int:
     print(f"Testing API at {BASE_URL}")
     print(f"Started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Connectivity check
+    # Connectivity check - exit early if backend unreachable
     try:
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=5) as c:
             r = await c.get("/health")
-            assert_eq(r.status_code, 200, "Health endpoint reachable")
+            if r.status_code != 200:
+                print(f"\n\033[31m✗\033[0m Health check failed: HTTP {r.status_code}")
+                print(f"   Make sure {BASE_URL} is the correct address and the backend is running.")
+                return 1
+            log_pass("Health endpoint reachable")
+    except httpx.ConnectError as e:
+        print(f"\n\033[31m✗\033[0m Cannot connect to {BASE_URL}: {e}")
+        print("   Make sure the backend is deployed and accessible.")
+        return 1
     except Exception as e:
         print(f"\n\033[31m✗\033[0m Cannot reach {BASE_URL}: {e}")
-        print("Make sure the backend is deployed and accessible.")
+        print("   Make sure the backend is deployed and accessible.")
         return 1
 
     await test_auth()
