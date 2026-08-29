@@ -1,0 +1,28 @@
+# Local env
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.development
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Test artifacts
+test.db
+test_*.db
