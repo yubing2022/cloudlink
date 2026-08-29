@@ -15,6 +15,63 @@
 - [ ] 系统已 update 到最新
 - [ ] `/opt/cloudlink/` 目录结构建好
 
+
+## ✅ 实际执行记录（2026-08-30）
+
+**采用方式**：[alibabacloud-workbench-cli](https://github.com/aliyun/alibabacloud-workbench-cli) 远程执行，**无需公网 SSH 暴露**
+
+**服务器信息**（实际）：
+- 实例 ID：`i-bp17ymd3baklc58tzbth`
+- 区域：杭州 (cn-hangzhou)
+- 公网 IP：118.31.225.109
+- 规格：ecs.e-c1m1.large (2 vCPU / 2GB RAM)
+- 系统：Ubuntu 22.04.5 LTS，x86_64
+
+**实际执行步骤**：
+```bash
+# 1. 上传脚本（macOS 本地）
+workbench upload scripts/init-server.sh /tmp/init-server.sh   --instance-id i-bp17ymd3baklc58tzbth --force
+
+# 2. 远程执行（最多 20 分钟超时）
+workbench exec --instance-id i-bp17ymd3baklc58tzbth   --timeout 1200 --command "bash /tmp/init-server.sh"
+```
+
+**遇到的问题与修复**：
+
+### 问题 1：Docker 组没自动创建
+**症状**：`deploy` 用户能跑 `docker --version`，但 `docker run` 报 permission denied  
+**原因**：某些 Docker 安装脚本不会自动创建 `docker` 组，usermod 静默失败  
+**修复**：脚本里加 `groupadd -f docker`（防御性）
+
+### 问题 2：workbench 默认 shell 是 zsh，不是 bash
+**症状**：`nproc`、`free` 等命令报 command not found  
+**解决**：用 `bash -c '...'` 显式调用 bash
+
+**验收结果**：
+
+| 检查项 | 结果 |
+|---|---|
+| deploy 用户 | 创建，uid=1000 |
+| Docker | v29.7.2 |
+| UFW | 仅 2222/80/443 开放 |
+| fail2ban | 运行中 |
+| Swap | 2GB |
+| 时区 | Asia/Shanghai |
+| 主机名 | cloudlink-server |
+| 项目目录 | /opt/cloudlink/ 创建 |
+
+**未做的事**（暂不需要）：
+- 改 SSH 端口到 2222 + 禁 root 登录（workbench 走 IAM 不需要 SSH）
+- SSH 密钥配置（用 workbench 不需要）
+- 给 deploy 用户配 sudo 密码（脚本里没设密码，但 workbench 用 IAM 认证）
+
+## 📝 后续建议
+
+由于使用了 workbench，**SSH 反而成了不必要的攻击面**。建议：
+1. **服务器 22 端口通过安全组关闭**（阿里云控制台 → ECS → 安全组 → 删 22 规则）
+2. **所有管理操作走 workbench exec**
+3. 真正需要 SSH 时再单独开端口
+
 ## 📝 实施步骤
 
 ### 步骤 1.1：首次 SSH 登录
