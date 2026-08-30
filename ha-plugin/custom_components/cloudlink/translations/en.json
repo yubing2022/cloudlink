@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to CloudLink",
+        "description": "Enter the CloudLink cloud server URL and your cloud_token (obtained from the cloud server after registering a HA instance).",
+        "data": {
+          "cloud_url": "Cloud server URL",
+          "cloud_token": "Cloud token"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "URL must start with http:// or https://",
+      "cannot_connect": "Failed to connect"
+    },
+    "abort": {
+      "already_configured": "This cloud_token is already configured"
+    }
+  }
+}
