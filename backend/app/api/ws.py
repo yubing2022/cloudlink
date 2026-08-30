@@ -1,4 +1,5 @@
 """WebSocket endpoints."""
+import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -44,12 +45,19 @@ async def websocket_ha(websocket: WebSocket):
     
     try:
         while True:
-            msg = await websocket.receive_json()
-            mtype = msg.get("type")
-            if mtype == "ping":
-                await websocket.send_json({"type": "pong"})
-            # HA -> cloud messages (device_sync, state_change) are sent via HTTP REST
-            # not over WS, so we don't need to handle them here.
+            # Use receive_text to support string ping/pong
+            raw = await websocket.receive_text()
+            if raw == "ping":
+                await websocket.send_text("pong")
+            else:
+                # Try to parse as JSON for HA->cloud messages
+                try:
+                    msg = json.loads(raw)
+                    mtype = msg.get("type")
+                    if mtype == "ping":
+                        await websocket.send_json({"type": "pong"})
+                except (json.JSONDecodeError, ValueError):
+                    pass
     except WebSocketDisconnect:
         pass
     except Exception as e:

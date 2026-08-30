@@ -41,6 +41,23 @@ pytest -v
 pytest --cov=app --cov-report=html
 ```
 
+## 🧪 集成测试
+
+针对已部署 API 的端到端验证（HTTP + WebSocket）。
+
+```bash
+# 安装测试依赖（已包含在 pyproject.toml）
+pip install httpx websockets
+
+# 运行（默认目标：公网 IP）
+python tests/integration/test_api.py
+
+# 自定义地址
+python tests/integration/test_api.py http://localhost:8000
+```
+
+详细测试覆盖见 `tests/integration/README.md`。
+
 ## 🔧 常用命令
 
 ```bash
