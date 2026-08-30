@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CloudLink</string>
+    <string name="login_title">登录 CloudLink</string>
+    <string name="email_hint">邮箱</string>
+    <string name="password_hint">密码</string>
+    <string name="login_button">登录</string>
+    <string name="home_title">我的设备</string>
+    <string name="logout">退出登录</string>
+    <string name="loading">加载中...</string>
+    <string name="error_generic">出错了，请重试</string>
+    <string name="no_devices">还没有设备</string>
+</resources>
