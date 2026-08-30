@@ -1,24 +1,15 @@
-"""CloudLink integration for Home Assistant.
-
-Connects HA to a CloudLink cloud server via WebSocket:
-- HA -> cloud: device list sync, state change reports
-- cloud -> HA: device action commands (service calls)
-"""
+"""CloudLink integration for Home Assistant."""
+import asyncio
 import logging
-from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
 
 from .cloud_client import CloudClient
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
-
-PLATFORMS = []  # This is a service-only integration (no entities exposed)
-
-SCAN_INTERVAL = timedelta(seconds=30)
+PLATFORMS = []
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -27,28 +18,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     cloud_token = entry.data["cloud_token"]
 
     client = CloudClient(hass, cloud_url, cloud_token)
-    
-    # Store client for cleanup
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = client
     
-    # Start the WebSocket connection in background
-    hass.async_create_task(client.start())
+    # CRITICAL: use asyncio.ensure_future (not hass.async_create_task) so the
+    # background task is truly fire-and-forget and does NOT block HA startup.
+    client.task = asyncio.ensure_future(client.start())
     
-    # Listen for HA options updates
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
-    
-    _LOGGER.info("CloudLink integration started for %s", cloud_url)
+    _LOGGER.warning("CloudLink: setup completed, task started for %s", cloud_url)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    client: CloudClient = hass.data[DOMAIN].pop(entry.entry_id)
-    await client.stop()
-    _LOGGER.info("CloudLink integration unloaded")
+    client: CloudClient = hass.data[DOMAIN].pop(entry.entry_id, None)
+    if client:
+        client._stopped = True
+        if client.task and not client.task.done():
+            client.task.cancel()
     return True
-
-
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options updates."""
-    await hass.config_entries.async_reload(entry.entry_id)
