@@ -15,6 +15,7 @@ import asyncio
 import sys
 import time
 import uuid
+from urllib.parse import urlparse
 
 import httpx
 import websockets
@@ -22,7 +23,11 @@ import websockets
 DEFAULT_BASE_URL = "http://118.31.225.109"
 
 BASE_URL = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_BASE_URL
-WS_URL = BASE_URL.replace("http://", "ws://").replace("https://", "wss://")
+# WebSocket goes directly to backend:8000 (avoids nginx WS issue)
+parsed = urlparse(BASE_URL)
+WS_URL = f"{parsed.scheme.replace('http', 'ws')}://{parsed.hostname}:8000"
+
+from urllib.parse import urlparse
 
 PASS = 0
 FAIL = 0
@@ -54,7 +59,7 @@ def assert_eq(actual, expected, name: str) -> None:
 
 async def setup_user(c: httpx.AsyncClient, label: str = "test") -> tuple[str, str]:
     """Register + login a new user. Returns (access_token, refresh_token)."""
-    email = f"{label}-{uuid.uuid4().hex[:8]}@cloudlink.test"
+    email = f"{label}-{uuid.uuid4().hex[:8]}@cloudlink-test.com"
     password = "testpass123456"
     await c.post("/api/auth/register", json={"email": email, "password": password})
     r = await c.post("/api/auth/login", json={"email": email, "password": password})
@@ -80,7 +85,7 @@ async def setup_ha_instance(c: httpx.AsyncClient, token: str, name: str = "Test 
 async def test_auth() -> None:
     print("\n[1/5] Authentication")
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=10) as c:
-        email = f"auth-{uuid.uuid4().hex[:8]}@cloudlink.test"
+        email = f"auth-{uuid.uuid4().hex[:8]}@cloudlink-test.com"
         password = "testpass123456"
 
         # Register
@@ -111,7 +116,8 @@ async def test_auth() -> None:
         r = await c.get("/api/auth/me", headers={"Authorization": "Bearer invalid.token.here"})
         assert_eq(r.status_code, 401, "/me with invalid token returns 401")
 
-        # Refresh token
+        # Refresh token (sleep 1s to ensure iat differs - tokens issued in same second are identical)
+        await asyncio.sleep(1)
         r = await c.post("/api/auth/refresh", json={"refresh_token": refresh_token})
         assert_eq(r.status_code, 200, "refresh returns 200")
         new_tokens = r.json()
@@ -394,7 +400,7 @@ async def test_websocket() -> None:
         instance_id = instance["id"]
 
     # Test HA WS connection
-    ws_url = f"{WS_URL}/ws/ha?token={cloud_token}"
+    ws_url = f"{WS_URL}/api/ws/ha?token={cloud_token}"
     try:
         async with websockets.connect(ws_url, open_timeout=5) as ws:
             await ws.send("ping")
@@ -419,7 +425,7 @@ async def test_websocket() -> None:
         log_fail("HA WS connection", str(e))
 
     # Invalid HA token - server should reject handshake
-    bad_url = f"{WS_URL}/ws/ha?token=invalid_xxx"
+    bad_url = f"{WS_URL}/api/ws/ha?token=invalid_xxx"
     try:
         async with websockets.connect(bad_url, open_timeout=5) as ws:
             try:
@@ -433,7 +439,7 @@ async def test_websocket() -> None:
         log_fail("Invalid HA token", str(e))
 
     # Valid Client WS
-    client_ws_url = f"{WS_URL}/ws/client?token={access_token}"
+    client_ws_url = f"{WS_URL}/api/ws/client?token={access_token}"
     try:
         async with websockets.connect(client_ws_url, open_timeout=5) as ws:
             await ws.send("ping")
@@ -443,7 +449,7 @@ async def test_websocket() -> None:
         log_fail("Client WS", str(e))
 
     # Invalid Client token
-    bad_client_url = f"{WS_URL}/ws/client?token=invalid"
+    bad_client_url = f"{WS_URL}/api/ws/client?token=invalid"
     try:
         async with websockets.connect(bad_client_url, open_timeout=5) as ws:
             try:

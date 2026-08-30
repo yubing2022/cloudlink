@@ -7,7 +7,13 @@ from passlib.context import CryptContext
 
 from app.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use pbkdf2_sha256 instead of bcrypt to avoid passlib/bcrypt 4.x compatibility issues
+# (passlib's bcrypt backend uses a >72 byte test secret for bug detection which fails)
+pwd_context = CryptContext(
+    schemes=["pbkdf2_sha256"],
+    deprecated="auto",
+    pbkdf2_sha256__default_rounds=600000,  # OWASP recommended for SHA256
+)
 
 
 def hash_password(password: str) -> str:
