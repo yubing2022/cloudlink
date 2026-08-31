@@ -35,8 +35,6 @@ android {
 dependencies {
     // Core AndroidX
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.constraintlayout)
 
     // Compose
     implementation(platform(libs.androidx.compose.bom))
@@ -51,8 +49,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.navigation.compose)
 
-    // Material (composable bridge)
-    implementation(libs.google.material)
 
     // DI
     implementation(libs.hilt.android)
@@ -73,6 +69,4 @@ dependencies {
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
 
-    // Yandex DivKit (for rich device cards - optional, not used yet)
-    implementation(libs.yandex.div.core)
 }
