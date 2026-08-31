@@ -74,5 +74,5 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     // Yandex DivKit (for rich device cards - optional, not used yet)
-    implementation(libs.yandex.divkit)
+    implementation(libs.yandex.div.core)
 }

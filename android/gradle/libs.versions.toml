@@ -33,7 +33,7 @@ datastore = "1.1.1"
 coroutines = "1.9.0"
 
 # Yandex DivKit (for rich device cards)
-divkit = "32.6.0"
+divCore = "28.1.0"
 
 [libraries]
 # AndroidX core
@@ -71,7 +71,7 @@ moshi-codegen = { group = "com.squareup.moshi", name = "moshi-kotlin-codegen", v
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 
 # Yandex DivKit (for rich device cards UI)
-yandex-divkit = { group = "com.yandex.divkit", name = "divkit", version.ref = "divkit" }
+yandex-div-core = { group = "com.yandex.div", name = "div-core", version.ref = "divCore" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
