@@ -82,14 +82,18 @@ async def _handle_device_sync(instance_id: int, raw_msg: dict) -> int:
         return added + updated
 
 
-async def _handle_state_change(instance_id: int, raw_msg: dict) -> bool:
-    """Process a state_change WS message. Returns True if updated."""
+async def _handle_state_change(instance_id: int, raw_msg: dict, user_id: int) -> bool:
+    """Process a state_change WS message. Returns True if updated.
+
+    Also broadcasts the change to the user's mobile clients so their UI
+    updates in real time.
+    """
     entity_id = raw_msg.get("entity_id")
     if not entity_id:
         return False
     state = raw_msg.get("state")
     attributes = raw_msg.get("attributes", {})
-    
+
     async with AsyncSessionLocal() as db:
         device = await db.scalar(
             select(Device).where(
@@ -109,12 +113,27 @@ async def _handle_state_change(instance_id: int, raw_msg: dict) -> bool:
                 attributes=attributes,
             ))
             await db.commit()
-            return True
-        device.state = state
-        device.attributes = attributes
-        device.last_state_change = datetime.now(timezone.utc)
-        await db.commit()
-        return True
+            user_msg = {
+                "type": "state_change",
+                "entity_id": entity_id,
+                "state": state or "unknown",
+                "attributes": attributes,
+            }
+        else:
+            device.state = state
+            device.attributes = attributes
+            device.last_state_change = datetime.now(timezone.utc)
+            await db.commit()
+            user_msg = {
+                "type": "state_change",
+                "entity_id": entity_id,
+                "state": state,
+                "attributes": attributes,
+            }
+
+    # Broadcast to user's mobile clients so the UI updates in real time
+    await ws_manager.broadcast_to_user(user_id, user_msg)
+    return True
 
 
 @router.websocket("/ws/ha")
@@ -162,7 +181,7 @@ async def websocket_ha(websocket: WebSocket):
                 except Exception:
                     pass
             elif mtype == "state_change":
-                await _handle_state_change(instance_id, msg)
+                await _handle_state_change(instance_id, msg, user_id)
             else:
                 logger.debug("WS HA: unknown msg type %s", mtype)
     except WebSocketDisconnect:
