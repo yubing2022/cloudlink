@@ -185,22 +185,50 @@ class CloudClient:
             _LOGGER.debug("CloudLink: unknown message type: %s", msg_type)
 
     async def _execute_action(self, msg: dict) -> None:
+        """Execute an HA service call from a device action.
+
+        Falls back through several strategies if the primary service is not found:
+        1. As requested (e.g., domain.toggle)
+        2. For button domain: button.press
+        3. Generic homeassistant.toggle (works for most domains)
+        4. homeassistant.turn_on / turn_off
+        """
         domain = msg.get("domain")
         service = msg.get("service")
         entity_id = msg.get("entity_id")
-        data = msg.get("data", {})
-        
+        data = dict(msg.get("data") or {})
+
         if not all([domain, service, entity_id]):
             _LOGGER.warning("CloudLink: incomplete action: %s", msg)
             return
-        
+
         if "entity_id" not in data:
             data["entity_id"] = entity_id
-        
-        _LOGGER.warning("CloudLink: executing %s.%s on %s", domain, service, entity_id)
-        try:
-            await self.hass.services.async_call(
-                domain, service, data, blocking=False,
-            )
-        except Exception:
-            _LOGGER.exception("CloudLink: failed to execute %s.%s", domain, service)
+
+        # Build fallback chain
+        attempts = [(service, data)]
+        if domain == "button" and service != "press":
+            attempts.append(("press", dict(data)))
+        attempts.append(("homeassistant.toggle", {"entity_id": entity_id}))
+        if service != "turn_on":
+            attempts.append(("homeassistant.turn_on", {"entity_id": entity_id}))
+        if service != "turn_off":
+            attempts.append(("homeassistant.turn_off", {"entity_id": entity_id}))
+
+        for svc, d in attempts:
+            _LOGGER.warning("CloudLink: attempting %s.%s on %s", domain, svc, entity_id)
+            try:
+                await self.hass.services.async_call(
+                    domain, svc, d, blocking=False,
+                )
+                _LOGGER.warning("CloudLink: OK %s.%s on %s", domain, svc, entity_id)
+                return
+            except Exception as e:
+                err = str(e).lower()
+                if "not found" in err or "servicenotfound" in err:
+                    _LOGGER.warning("CloudLink: %s.%s not available, trying next", domain, svc)
+                    continue
+                _LOGGER.exception("CloudLink: %s.%s failed (non-recoverable)", domain, svc)
+                return
+
+        _LOGGER.warning("CloudLink: all attempts failed for %s (entity: %s)", domain, entity_id)

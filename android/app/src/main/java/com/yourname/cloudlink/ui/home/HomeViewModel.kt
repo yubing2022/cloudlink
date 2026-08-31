@@ -65,16 +65,17 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val token = tokenStore.getAccessToken() ?: return@launch
-                val (service, data) = when (action) {
-                    "toggle" -> device.domain to mapOf("entity_id" to device.entity_id)
-                    "turn_on" -> "turn_on" to mapOf("entity_id" to device.entity_id)
-                    "turn_off" -> "turn_off" to mapOf("entity_id" to device.entity_id)
-                    else -> return@launch
+                // button 域用 press service（不是 toggle）
+                // 其他域用 domain.toggle（最通用）
+                val actualAction = if (device.domain == "button") {
+                    "press"
+                } else {
+                    action
                 }
                 api.controlDevice(
                     "Bearer $token",
                     device.entity_id,
-                    DeviceActionRequest(service, action, data),
+                    DeviceActionRequest(device.domain, actualAction, mapOf("entity_id" to device.entity_id)),
                 )
             } catch (_: Exception) {
                 // ignore; state_change will update UI
