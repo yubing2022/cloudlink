@@ -210,6 +210,7 @@ async def sync_devices(
             existing.state = ent.get("state", existing.state)
             existing.attributes = ent.get("attributes", existing.attributes)
             existing.ha_device_pk = dev_pk
+            existing.entity_category = ent.get("entity_category")
             ents_updated += 1
         else:
             db.add(DeviceEntity(
@@ -220,6 +221,7 @@ async def sync_devices(
                 name=ent.get("name", ""),
                 state=ent.get("state", "unknown"),
                 attributes=ent.get("attributes", {}),
+                entity_category=ent.get("entity_category"),
             ))
             ents_added += 1
 

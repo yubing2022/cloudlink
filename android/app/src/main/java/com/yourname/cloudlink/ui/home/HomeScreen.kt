@@ -102,7 +102,7 @@ private fun DeviceList(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 )
             }
-            items(devs, key = { it.haDeviceId }) { device ->
+            items(devs.filter { it.entities.isNotEmpty() }, key = { it.haDeviceId }) { device ->
                 DeviceCard(
                     device = device,
                     onEntityAction = onEntityAction,
@@ -189,7 +189,22 @@ private fun EntityRow(
             modifier = Modifier.padding(end = 8.dp),
         )
         Column(modifier = Modifier.weight(1f)) {
-            Text(entity.name, style = MaterialTheme.typography.bodyMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(entity.name, style = MaterialTheme.typography.bodyMedium)
+                if (entity.entityCategory != null) {
+                    Spacer(Modifier.width(4.dp))
+                    AssistChip(
+                        onClick = {},
+                        label = {
+                            Text(
+                                entity.entityCategory,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        },
+                        modifier = Modifier.height(20.dp),
+                    )
+                }
+            }
             Text(
                 entity.state,
                 style = MaterialTheme.typography.labelSmall,

@@ -18,6 +18,9 @@ data class Entity(
     val name: String,
     val state: String,
     val attributes: Map<String, Any?> = emptyMap(),
+    /** HA's entity_category: null=real, "config"=config entry,
+     *  "diagnostic"=diagnostic. HA plugin filters out non-null. */
+    @Json(name = "entity_category") val entityCategory: String? = null,
     @Json(name = "last_state_change") val lastStateChange: String? = null,
     @Json(name = "updated_at") val updatedAt: String? = null,
 )

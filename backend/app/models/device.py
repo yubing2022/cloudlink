@@ -84,6 +84,10 @@ class DeviceEntity(Base):
     last_state_change: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    # HA's entity_category: None=real, "config"=config entry, "diagnostic"=diag
+    entity_category: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, index=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default="now()", nullable=False,
