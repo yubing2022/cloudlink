@@ -10,7 +10,7 @@ from app.database import Base
 from app.models.base import TimestampMixin
 
 if TYPE_CHECKING:
-    from app.models.device import Device
+    from app.models.device import HADevice, DeviceEntity
     from app.models.user import User
 
 
@@ -40,8 +40,11 @@ class HAInstance(Base, TimestampMixin):
     is_online: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     user: Mapped["User"] = relationship("User", back_populates="ha_instances")
-    devices: Mapped[List["Device"]] = relationship(
-        "Device",
+    ha_devices: Mapped[List["HADevice"]] = relationship(
+        back_populates="ha_instance",
+        cascade="all, delete-orphan",
+    )
+    entities: Mapped[List["DeviceEntity"]] = relationship(
         back_populates="ha_instance",
         cascade="all, delete-orphan",
     )

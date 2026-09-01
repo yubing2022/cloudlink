@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.crypto import decrypt_ha_token, encrypt_ha_token
 from app.database import get_db
 from app.deps import get_current_user
-from app.models.device import Device
+from app.models.device import DeviceEntity
 from app.models.ha_instance import HAInstance
 from app.models.user import User
 from app.schemas.ha import (
@@ -51,8 +51,8 @@ async def list_instances(
     """List all HA instances owned by the current user."""
     # Single query with subquery for device counts
     device_count = (
-        select(Device.ha_instance_id, func.count(Device.id).label("cnt"))
-        .group_by(Device.ha_instance_id)
+        select(DeviceEntity.ha_instance_id, func.count(DeviceEntity.id).label("cnt"))
+        .group_by(DeviceEntity.ha_instance_id)
         .subquery()
     )
     stmt = (
@@ -119,7 +119,7 @@ async def heartbeat(
 async def sync_devices(
     cloud_token: str,
     body: dict,
-    db,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """HA instance sends full state.
 
@@ -257,13 +257,13 @@ async def report_state(
     """HA instance reports a single device state change."""
     instance = await _get_instance_by_token(cloud_token, db)
     device = await db.scalar(
-        select(Device).where(
-            Device.ha_instance_id == instance.id,
-            Device.entity_id == body.entity_id,
+        select(DeviceEntity).where(
+            DeviceEntity.ha_instance_id == instance.id,
+            DeviceEntity.entity_id == body.entity_id,
         )
     )
     if not device:
-        device = Device(
+        device = DeviceEntity(
             ha_instance_id=instance.id,
             entity_id=body.entity_id,
             domain=body.entity_id.split(".")[0] if "." in body.entity_id else "unknown",

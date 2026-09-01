@@ -45,6 +45,7 @@ class HADevice(Base):
         UniqueConstraint("ha_instance_id", "ha_device_id", name="uq_ha_device"),
     )
 
+    ha_instance: Mapped["HAInstance"] = relationship(back_populates="ha_devices")
     entities: Mapped[list["DeviceEntity"]] = relationship(
         back_populates="device",
         cascade="all, delete-orphan",
@@ -101,6 +102,7 @@ class DeviceEntity(Base):
     )
 
     device: Mapped[Optional["HADevice"]] = relationship(back_populates="entities")
+    ha_instance: Mapped["HAInstance"] = relationship(back_populates="entities")
 
     def __repr__(self) -> str:
         return f"<DeviceEntity {self.entity_id} state={self.state!r}>"

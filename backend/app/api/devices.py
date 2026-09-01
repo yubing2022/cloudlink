@@ -50,30 +50,20 @@ async def list_devices(
     orphan_result = await db.execute(orphan_stmt)
     orphans = orphan_result.scalars().all()
 
-    # Build response: real devices + synthetic devices for orphans
-    from app.models.device import HADevice as _HADevice
+    # Build response: real devices + synthetic devices for orphans.
+    # Use plain Pydantic models for synthetics to avoid persisting them
+    # (attribute assignment on ORM objects triggers session flush).
+    from app.schemas.device import HADeviceSchema, DeviceEntitySchema
     response = []
     for d in devices:
         response.append(d)
     for e in orphans:
-        # Wrap orphan as a synthetic device so the app gets a uniform list
-        from datetime import datetime
-        synthetic = _HADevice(
+        synthetic = HADeviceSchema(
             id=-e.id,  # negative to avoid collision with real ids
-            ha_instance_id=e.ha_instance_id,
             ha_device_id=f"orphan-{e.entity_id}",
             name=e.name or e.entity_id,
-            manufacturer=None,
-            model=None,
-            area=None,
-            sw_version=None,
-            hw_version=None,
-            created_at=e.created_at or datetime.utcnow(),
-            updated_at=e.updated_at or datetime.utcnow(),
+            entities=[DeviceEntitySchema.model_validate(e)],
         )
-        # attach entity via relationship
-        e.device = synthetic
-        synthetic.entities = [e]
         response.append(synthetic)
     return response
 
@@ -96,20 +86,15 @@ async def get_device(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Device not found")
     if ent.device:
         return ent.device
-    # Orphan entity - wrap
-    from datetime import datetime
-    from app.models.device import HADevice as _HADevice
-    synthetic = _HADevice(
-        id=-ent.id, ha_instance_id=ent.ha_instance_id,
+    # Orphan entity - wrap as a plain Pydantic model so it doesn't get
+    # persisted to the DB (ORM back-populates would otherwise commit).
+    from app.schemas.device import HADeviceSchema, DeviceEntitySchema
+    return HADeviceSchema(
+        id=-ent.id,
         ha_device_id=f"orphan-{ent.entity_id}",
         name=ent.name or ent.entity_id,
-        manufacturer=None, model=None, area=None,
-        sw_version=None, hw_version=None,
-        created_at=ent.created_at or datetime.utcnow(),
-        updated_at=ent.updated_at or datetime.utcnow(),
+        entities=[DeviceEntitySchema.model_validate(ent)],
     )
-    synthetic.entities = [ent]
-    return synthetic
 
 
 @router.post("/{entity_id:path}/action")

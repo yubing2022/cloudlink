@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decode_token
 from app.database import AsyncSessionLocal
 from app.models.ha_instance import HAInstance
-from app.models.device import Device
+from app.models.device import DeviceEntity
 from app.models.user import User
 from app.schemas.ha import DeviceSyncItem
 from app.ws.manager import ws_manager
@@ -35,7 +35,7 @@ async def _handle_device_sync(instance_id: int, raw_msg: dict) -> int:
     
     async with AsyncSessionLocal() as db:
         existing_res = await db.execute(
-            select(Device).where(Device.ha_instance_id == instance_id)
+            select(DeviceEntity).where(DeviceEntity.ha_instance_id == instance_id)
         )
         existing_by_entity = {d.entity_id: d for d in existing_res.scalars().all()}
         incoming_entity_ids = set()
@@ -57,7 +57,7 @@ async def _handle_device_sync(instance_id: int, raw_msg: dict) -> int:
                 device.last_state_change = datetime.now(timezone.utc)
                 updated += 1
             else:
-                db.add(Device(
+                db.add(DeviceEntity(
                     ha_instance_id=instance_id,
                     entity_id=item.entity_id,
                     domain=item.domain,
@@ -96,15 +96,15 @@ async def _handle_state_change(instance_id: int, raw_msg: dict, user_id: int) ->
 
     async with AsyncSessionLocal() as db:
         device = await db.scalar(
-            select(Device).where(
-                Device.ha_instance_id == instance_id,
-                Device.entity_id == entity_id,
+            select(DeviceEntity).where(
+                DeviceEntity.ha_instance_id == instance_id,
+                DeviceEntity.entity_id == entity_id,
             )
         )
         if not device:
             # Auto-create (state_change may arrive before initial sync completes)
             domain = entity_id.split(".", 1)[0] if "." in entity_id else "unknown"
-            db.add(Device(
+            db.add(DeviceEntity(
                 ha_instance_id=instance_id,
                 entity_id=entity_id,
                 domain=domain,
