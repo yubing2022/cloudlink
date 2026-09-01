@@ -2,7 +2,7 @@ package com.yourname.cloudlink.data.ws
 
 import com.squareup.moshi.JsonAdapter
 import com.squareup.moshi.Moshi
-import com.yourname.cloudlink.data.model.Device
+import com.yourname.cloudlink.data.model.HomeDevice
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -23,8 +23,8 @@ sealed class DeviceEvent {
         val state: String,
         val attributes: Map<String, Any?>,
     ) : DeviceEvent()
-    data class DeviceAdded(val device: Device) : DeviceEvent()
     data class DeviceRemoved(val entityId: String) : DeviceEvent()
+    data object Refresh : DeviceEvent()
     data object Connected : DeviceEvent()
     data object Disconnected : DeviceEvent()
 }
@@ -95,20 +95,8 @@ class DeviceWebSocket @Inject constructor(
                     )
                 }
                 "device_added" -> {
-                    val dev = map["device"] as? Map<*, *> ?: return
-                    val device = Device(
-                        id = (dev["id"] as? Number)?.toLong() ?: 0L,
-                        entity_id = dev["entity_id"] as? String ?: "",
-                        domain = dev["domain"] as? String ?: "",
-                        name = dev["name"] as? String ?: "",
-                        state = dev["state"] as? String ?: "",
-                        attributes = (dev["attributes"] as? Map<*, *>)
-                            ?.mapKeys { it.key.toString() }
-                            ?.mapValues { it.value }
-                            ?: emptyMap(),
-                        haInstanceId = (dev["ha_instance_id"] as? Number)?.toLong() ?: 0L,
-                    )
-                    _events.tryEmit(DeviceEvent.DeviceAdded(device))
+                    // Refetch full list - simpler than partial merge
+                    _events.tryEmit(DeviceEvent.Refresh)
                 }
                 "device_removed" -> {
                     val entityId = map["entity_id"] as? String ?: return

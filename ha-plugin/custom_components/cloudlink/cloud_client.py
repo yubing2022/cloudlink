@@ -5,6 +5,9 @@ import logging
 
 import websockets
 from homeassistant.core import Event, HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import entity_registry as er
 from websockets.exceptions import ConnectionClosed
 
 from .const import (
@@ -162,12 +165,22 @@ class CloudClient:
             return
         if not self.ws:
             return
+        # Also include ha_device_id so backend can update the right device
+        ha_device_id = None
+        try:
+            entity_reg = er.async_get(self.hass)
+            ent_reg_entry = entity_reg.async_get(new.entity_id)
+            if ent_reg_entry:
+                ha_device_id = ent_reg_entry.device_id
+        except Exception:
+            pass
         try:
             payload = json.dumps({
                 "type": "state_change",
                 "entity_id": new.entity_id,
                 "state": new.state,
                 "attributes": dict(new.attributes),
+                "ha_device_id": ha_device_id,
             })
             await self.ws.send(payload)
         except ConnectionClosed:

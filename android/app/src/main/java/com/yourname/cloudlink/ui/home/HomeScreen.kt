@@ -3,18 +3,25 @@ package com.yourname.cloudlink.ui.home
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.yourname.cloudlink.data.model.Device
+import com.yourname.cloudlink.data.model.Entity
+import com.yourname.cloudlink.data.model.HomeDevice
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -40,7 +47,7 @@ fun HomeScreen(
                         Icon(Icons.Default.Refresh, contentDescription = "刷新")
                     }
                     IconButton(onClick = { viewModel.logout(onLogout) }) {
-                        Icon(Icons.Default.ExitToApp, contentDescription = "退出")
+                        Icon(Icons.Filled.ExitToApp, contentDescription = "退出")
                     }
                 },
             )
@@ -48,116 +55,203 @@ fun HomeScreen(
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             when {
-                state.isLoading && state.devices.isEmpty() -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
-                    }
-                }
-                state.error != null && state.devices.isEmpty() -> {
+                state.isLoading && state.devices.isEmpty() ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                state.error != null && state.devices.isEmpty() ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                state.error!!,
-                                color = MaterialTheme.colorScheme.error,
-                            )
+                            Text(state.error!!, color = MaterialTheme.colorScheme.error)
                             Spacer(Modifier.height(8.dp))
                             Button(onClick = viewModel::loadDevices) { Text("重试") }
                         }
                     }
-                }
-                state.devices.isEmpty() -> {
+                state.devices.isEmpty() ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("还没有设备。先在 HA 里配置 cloudlink 集成。")
+                        Text("还没有设备")
                     }
-                }
-                else -> {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(8.dp),
-                    ) {
-                        val grouped = state.devices.groupBy { it.domain }
-                        grouped.forEach { (domain, items) ->
-                            item {
-                                Text(
-                                    text = domainLabel(domain),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    modifier = Modifier.padding(8.dp),
-                                )
-                            }
-                            items(items) { device ->
-                                DeviceRow(
-                                    device = device,
-                                    onToggle = { viewModel.control(device, "toggle") },
-                                    onTurnOn = { viewModel.control(device, "turn_on") },
-                                    onTurnOff = { viewModel.control(device, "turn_off") },
-                                )
-                            }
-                        }
-                    }
-                }
+                else ->
+                    DeviceList(
+                        devices = state.devices,
+                        onEntityAction = viewModel::control,
+                        onDeviceToggle = viewModel::togglePrimary,
+                    )
             }
         }
     }
 }
 
-private fun domainLabel(d: String) = when (d) {
-    "light" -> "💡 灯"
-    "switch" -> "🔌 开关"
-    "sensor" -> "📊 传感器"
-    "binary_sensor" -> "🔘 二元传感器"
-    "button" -> "🔲 按钮"
-    "media_player" -> "🎵 媒体"
-    "fan" -> "🌀 风扇"
-    "cover" -> "🪟 窗帘"
-    "lock" -> "🔒 锁"
-    "climate" -> "🌡️ 温控"
-    else -> d
+@Composable
+private fun DeviceList(
+    devices: List<HomeDevice>,
+    onEntityAction: (Entity, String) -> Unit,
+    onDeviceToggle: (HomeDevice) -> Unit,
+) {
+    val byArea = remember(devices) {
+        devices.groupBy { it.area ?: "未分组" }
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(8.dp),
+    ) {
+        byArea.forEach { (area, devs) ->
+            item(key = "area_$area") {
+                Text(
+                    text = "📍 $area",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+            items(devs, key = { it.haDeviceId }) { device ->
+                DeviceCard(
+                    device = device,
+                    onEntityAction = onEntityAction,
+                    onTogglePrimary = { onDeviceToggle(device) },
+                )
+            }
+        }
+    }
 }
 
 @Composable
-private fun DeviceRow(
-    device: Device,
-    onToggle: () -> Unit,
-    onTurnOn: () -> Unit,
-    onTurnOff: () -> Unit,
+private fun DeviceCard(
+    device: HomeDevice,
+    onEntityAction: (Entity, String) -> Unit,
+    onTogglePrimary: () -> Unit,
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp, horizontal = 8.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(device.name, style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    text = device.state,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (device.state in listOf("on", "home", "playing", "open"))
-                        MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
+        Column(modifier = Modifier.padding(12.dp)) {
+            // Header: device name + area + quick action
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Home,
+                    contentDescription = null,
+                    modifier = Modifier.padding(end = 8.dp),
                 )
-            }
-            Row {
-                when (device.domain) {
-                    "light", "switch", "media_player", "fan" -> {
-                        Switch(
-                            checked = device.state in listOf("on", "playing"),
-                            onCheckedChange = { onToggle() },
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = device.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    val subtitle = listOfNotNull(device.manufacturer, device.model, device.area)
+                        .joinToString(" • ")
+                    if (subtitle.isNotEmpty()) {
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    "button" -> {
-                        Button(onClick = onToggle) { Text("按") }
+                }
+                // Quick toggle: only show if there's a togglable primary entity
+                device.primaryEntity?.let { primary ->
+                    if (primary.domain in listOf("light", "switch", "fan", "media_player")) {
+                        Switch(
+                            checked = primary.state in listOf("on", "playing", "home", "open"),
+                            onCheckedChange = { onTogglePrimary() },
+                        )
                     }
-                    else -> {
-                        Text(device.domain, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            // Entities: all entities of this device as sub-controls
+            if (device.entities.size > 1) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    device.entities.forEach { entity ->
+                        EntityRow(
+                            entity = entity,
+                            onAction = onEntityAction,
+                        )
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun EntityRow(
+    entity: Entity,
+    onAction: (Entity, String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = entityIcon(entity.domain),
+            fontSize = 18.sp,
+            modifier = Modifier.padding(end = 8.dp),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(entity.name, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                entity.state,
+                style = MaterialTheme.typography.labelSmall,
+                color = stateColor(entity.state, entity.domain),
+            )
+        }
+        EntityActionButton(entity, onAction)
+    }
+}
+
+@Composable
+private fun EntityActionButton(
+    entity: Entity,
+    onAction: (Entity, String) -> Unit,
+) {
+    when (entity.domain) {
+        "light", "switch", "fan", "media_player" -> {
+            val isOn = entity.state in listOf("on", "playing", "home", "open")
+            Switch(
+                checked = isOn,
+                onCheckedChange = { onAction(entity, "toggle") },
+            )
+        }
+        "button" -> {
+            FilledTonalButton(
+                onClick = { onAction(entity, "press") },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("按", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        "sensor", "binary_sensor" -> {
+            // Read-only, no action
+        }
+        else -> {
+            // Try generic toggle
+            TextButton(onClick = { onAction(entity, "toggle") }) {
+                Text(entity.domain)
+            }
+        }
+    }
+}
+
+private fun entityIcon(domain: String) = when (domain) {
+    "light" -> "💡"
+    "switch" -> "🔌"
+    "fan" -> "🌀"
+    "media_player" -> "🎵"
+    "sensor" -> "📊"
+    "binary_sensor" -> "🔘"
+    "button" -> "🔲"
+    "climate" -> "🌡️"
+    "cover" -> "🪟"
+    "lock" -> "🔒"
+    "camera" -> "📷"
+    else -> "⚙️"
+}
+
+private fun stateColor(state: String, domain: String): Color = when {
+    state in listOf("on", "playing", "home", "open", "unlocked", "active") -> Color(0xFF2E7D32)
+    state in listOf("off", "idle", "closed", "locked", "inactive") -> Color(0xFF616161)
+    else -> Color(0xFFE65100)
 }

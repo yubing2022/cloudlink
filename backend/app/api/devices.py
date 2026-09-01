@@ -1,4 +1,4 @@
-"""Device listing and control endpoints (user-facing)."""
+"""Devices endpoint - returns devices grouped by area and device."""
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,48 +8,108 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.deps import get_current_user
-from app.models.device import Device
+from app.models.device import HADevice, DeviceEntity
 from app.models.ha_instance import HAInstance
 from app.models.user import User
-from app.schemas.device import DeviceActionRequest, DeviceResponse
+from app.schemas.device import DeviceActionRequest, HADeviceSchema
 from app.ws.manager import ws_manager
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
 
-@router.get("", response_model=list[DeviceResponse])
+@router.get("", response_model=list[HADeviceSchema])
 async def list_devices(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """List all devices across the user's HA instances."""
+    """List all HA devices (with their entities) owned by the current user.
+
+    Devices are grouped by HA's device registry, with all entities of the
+    same device bundled together. Devices without a HA device_id (legacy
+    or standalone entities) appear as one-entity devices.
+    """
     stmt = (
-        select(Device)
-        .join(HAInstance, Device.ha_instance_id == HAInstance.id)
+        select(HADevice)
+        .join(HAInstance, HADevice.ha_instance_id == HAInstance.id)
         .where(HAInstance.user_id == user.id)
-        .options(selectinload(Device.ha_instance))
-        .order_by(Device.domain, Device.name)
+        .options(selectinload(HADevice.entities))
+        .order_by(HADevice.area.is_(None), HADevice.area, HADevice.name)
     )
     result = await db.execute(stmt)
-    return result.scalars().all()
+    devices = result.scalars().all()
+
+    # Also include "orphan" entities (no device_id) for backwards compat
+    orphan_stmt = (
+        select(DeviceEntity)
+        .join(HAInstance, DeviceEntity.ha_instance_id == HAInstance.id)
+        .where(
+            HAInstance.user_id == user.id,
+            DeviceEntity.ha_device_pk.is_(None),
+        )
+    )
+    orphan_result = await db.execute(orphan_stmt)
+    orphans = orphan_result.scalars().all()
+
+    # Build response: real devices + synthetic devices for orphans
+    from app.models.device import HADevice as _HADevice
+    response = []
+    for d in devices:
+        response.append(d)
+    for e in orphans:
+        # Wrap orphan as a synthetic device so the app gets a uniform list
+        from datetime import datetime
+        synthetic = _HADevice(
+            id=-e.id,  # negative to avoid collision with real ids
+            ha_instance_id=e.ha_instance_id,
+            ha_device_id=f"orphan-{e.entity_id}",
+            name=e.name or e.entity_id,
+            manufacturer=None,
+            model=None,
+            area=None,
+            sw_version=None,
+            hw_version=None,
+            created_at=e.created_at or datetime.utcnow(),
+            updated_at=e.updated_at or datetime.utcnow(),
+        )
+        # attach entity via relationship
+        e.device = synthetic
+        synthetic.entities = [e]
+        response.append(synthetic)
+    return response
 
 
-@router.get("/{entity_id:path}", response_model=DeviceResponse)
+@router.get("/{entity_id:path}", response_model=HADeviceSchema)
 async def get_device(
     entity_id: str,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Get details of a single device."""
+    """Get a single device by entity_id (returns the parent device)."""
     stmt = (
-        select(Device)
-        .join(HAInstance, Device.ha_instance_id == HAInstance.id)
-        .where(HAInstance.user_id == user.id, Device.entity_id == entity_id)
+        select(DeviceEntity)
+        .join(HAInstance, DeviceEntity.ha_instance_id == HAInstance.id)
+        .where(HAInstance.user_id == user.id, DeviceEntity.entity_id == entity_id)
+        .options(selectinload(DeviceEntity.device))
     )
-    device = (await db.execute(stmt)).scalar_one_or_none()
-    if not device:
+    ent = (await db.execute(stmt)).scalar_one_or_none()
+    if not ent:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Device not found")
-    return device
+    if ent.device:
+        return ent.device
+    # Orphan entity - wrap
+    from datetime import datetime
+    from app.models.device import HADevice as _HADevice
+    synthetic = _HADevice(
+        id=-ent.id, ha_instance_id=ent.ha_instance_id,
+        ha_device_id=f"orphan-{ent.entity_id}",
+        name=ent.name or ent.entity_id,
+        manufacturer=None, model=None, area=None,
+        sw_version=None, hw_version=None,
+        created_at=ent.created_at or datetime.utcnow(),
+        updated_at=ent.updated_at or datetime.utcnow(),
+    )
+    synthetic.entities = [ent]
+    return synthetic
 
 
 @router.post("/{entity_id:path}/action")
@@ -59,26 +119,26 @@ async def control_device(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Send a service call to a device via its HA instance."""
-    # Find the device and its HA instance
+    """Send a service call to an entity via its HA instance.
+
+    body.domain must match the entity's domain.
+    """
     stmt = (
-        select(Device, HAInstance)
-        .join(HAInstance, Device.ha_instance_id == HAInstance.id)
-        .where(HAInstance.user_id == user.id, Device.entity_id == entity_id)
+        select(DeviceEntity, HAInstance)
+        .join(HAInstance, DeviceEntity.ha_instance_id == HAInstance.id)
+        .where(HAInstance.user_id == user.id, DeviceEntity.entity_id == entity_id)
     )
     row = (await db.execute(stmt)).first()
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Device not found")
     device, instance = row
-    
-    # Verify domain matches
+
     if body.domain and body.domain != device.domain:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"Domain mismatch: device is {device.domain}, request says {body.domain}",
         )
-    
-    # Send to HA via WebSocket
+
     delivered = await ws_manager.send_to_ha(
         instance.cloud_token,
         {

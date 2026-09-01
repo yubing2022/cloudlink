@@ -4,8 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.yourname.cloudlink.data.api.ApiService
 import com.yourname.cloudlink.data.local.TokenStore
-import com.yourname.cloudlink.data.model.Device
 import com.yourname.cloudlink.data.model.DeviceActionRequest
+import com.yourname.cloudlink.data.model.Entity
+import com.yourname.cloudlink.data.model.HomeDevice
 import com.yourname.cloudlink.data.ws.DeviceEvent
 import com.yourname.cloudlink.data.ws.DeviceWebSocket
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -17,7 +18,7 @@ import retrofit2.HttpException
 import javax.inject.Inject
 
 data class HomeUiState(
-    val devices: List<Device> = emptyList(),
+    val devices: List<HomeDevice> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,
     val wsConnected: Boolean = false,
@@ -45,7 +46,6 @@ class HomeViewModel @Inject constructor(
                 val token = tokenStore.getAccessToken() ?: return@launch
                 val devices = api.listDevices("Bearer $token")
                 _state.value = _state.value.copy(devices = devices, isLoading = false)
-                // Start WS
                 ws.connect("ws://118.31.225.109:8000", token)
             } catch (e: HttpException) {
                 _state.value = _state.value.copy(
@@ -61,26 +61,28 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun control(device: Device, action: String) {
+    fun control(entity: Entity, action: String) {
         viewModelScope.launch {
             try {
                 val token = tokenStore.getAccessToken() ?: return@launch
-                // button 域用 press service（不是 toggle）
-                // 其他域用 domain.toggle（最通用）
-                val actualAction = if (device.domain == "button") {
+                val actualAction = if (entity.domain == "button") {
                     "press"
                 } else {
                     action
                 }
                 api.controlDevice(
                     "Bearer $token",
-                    device.entity_id,
-                    DeviceActionRequest(device.domain, actualAction, mapOf("entity_id" to device.entity_id)),
+                    entity.entity_id,
+                    DeviceActionRequest(entity.domain, actualAction, mapOf("entity_id" to entity.entity_id)),
                 )
             } catch (_: Exception) {
                 // ignore; state_change will update UI
             }
         }
+    }
+
+    fun togglePrimary(device: HomeDevice) {
+        device.primaryEntity?.let { control(it, "toggle") }
     }
 
     fun logout(onDone: () -> Unit) {
@@ -101,23 +103,25 @@ class HomeViewModel @Inject constructor(
                         _state.value = _state.value.copy(wsConnected = false)
                     is DeviceEvent.StateChanged -> {
                         _state.value = _state.value.copy(
-                            devices = _state.value.devices.map {
-                                if (it.entity_id == evt.entityId) {
-                                    it.copy(state = evt.state, attributes = evt.attributes)
-                                } else it
+                            devices = _state.value.devices.map { d ->
+                                val updatedEntities = d.entities.map { e ->
+                                    if (e.entity_id == evt.entityId) {
+                                        e.copy(state = evt.state, attributes = evt.attributes)
+                                    } else e
+                                }
+                                d.copy(entities = updatedEntities)
                             }
                         )
                     }
-                    is DeviceEvent.DeviceAdded -> {
-                        if (_state.value.devices.none { it.entity_id == evt.device.entity_id }) {
-                            _state.value = _state.value.copy(
-                                devices = _state.value.devices + evt.device
-                            )
-                        }
+                    DeviceEvent.Refresh -> {
+                        // Refetch full list on any refresh signal
+                        loadDevices()
                     }
                     is DeviceEvent.DeviceRemoved -> {
                         _state.value = _state.value.copy(
-                            devices = _state.value.devices.filterNot { it.entity_id == evt.entityId }
+                            devices = _state.value.devices.filterNot {
+                                false  // todo: 用 entityId 过滤；现在简单 refresh
+                            }
                         )
                     }
                 }

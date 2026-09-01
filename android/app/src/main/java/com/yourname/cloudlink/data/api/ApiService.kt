@@ -1,6 +1,6 @@
 package com.yourname.cloudlink.data.api
 
-import com.yourname.cloudlink.data.model.Device
+import com.yourname.cloudlink.data.model.HomeDevice
 import com.yourname.cloudlink.data.model.DeviceActionRequest
 import com.yourname.cloudlink.data.model.LoginRequest
 import com.yourname.cloudlink.data.model.RegisterRequest
@@ -21,8 +21,10 @@ interface ApiService {
     @POST("api/auth/refresh")
     suspend fun refresh(@Header("Authorization") refresh: String): TokenResponse
 
+    /** Returns devices (with their entities nested). Backend now groups
+     *  entities by HA device registry entry. */
     @GET("api/devices")
-    suspend fun listDevices(@Header("Authorization") auth: String): List<Device>
+    suspend fun listDevices(@Header("Authorization") auth: String): List<HomeDevice>
 
     @POST("api/devices/{entityId}/action")
     suspend fun controlDevice(

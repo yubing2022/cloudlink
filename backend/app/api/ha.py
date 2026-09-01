@@ -118,51 +118,133 @@ async def heartbeat(
 @ha_router.post("/{cloud_token}/devices/sync")
 async def sync_devices(
     cloud_token: str,
-    body: DeviceSyncRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    body: dict,
+    db,
 ):
-    """HA instance sends a full list of devices (replace strategy)."""
+    """HA instance sends full state.
+
+    New schema:
+        body = {
+            "devices": {ha_device_id: {name, manufacturer, model, area, ...}, ...},
+            "entities": [{entity_id, domain, name, state, attributes, ha_device_id}, ...],
+        }
+
+    Backwards compat: if body has only "devices" list (old format), wrap
+    each as its own single-entity synthetic device.
+    """
+    from app.models.device import HADevice, DeviceEntity
+
     instance = await _get_instance_by_token(cloud_token, db)
-    
-    # Fetch existing devices for this instance
-    existing = await db.execute(
-        select(Device).where(Device.ha_instance_id == instance.id)
+
+    raw = body or {}
+    if "entities" in raw and isinstance(raw.get("entities"), list):
+        devices_dict = raw.get("devices") or {}
+        entities_list = raw["entities"]
+    elif "devices" in raw and isinstance(raw["devices"], list):
+        devices_dict = {}
+        entities_list = []
+        for item in raw["devices"]:
+            eid = item.get("entity_id", f"unknown-{len(entities_list)}")
+            fake_did = f"legacy-{eid}"
+            devices_dict[fake_did] = {"name": item.get("name", eid)}
+            entities_list.append({**item, "ha_device_id": fake_did})
+    else:
+        devices_dict = {}
+        entities_list = []
+
+    existing_devs = await db.execute(
+        select(HADevice).where(HADevice.ha_instance_id == instance.id)
     )
-    existing_by_entity = {d.entity_id: d for d in existing.scalars().all()}
-    incoming_entity_ids = {item.entity_id for item in body.devices}
-    
-    # Upsert each incoming device
-    for item in body.devices:
-        device = existing_by_entity.get(item.entity_id)
-        if device:
-            device.domain = item.domain
-            device.name = item.name
-            device.state = item.state
-            device.attributes = item.attributes
+    existing_devs_map = {d.ha_device_id: d for d in existing_devs.scalars().all()}
+    devs_added = devs_updated = 0
+    for ha_device_id, d in devices_dict.items():
+        existing = existing_devs_map.get(ha_device_id)
+        if existing:
+            existing.name = d.get("name", existing.name)
+            existing.manufacturer = d.get("manufacturer")
+            existing.model = d.get("model")
+            existing.area = d.get("area")
+            existing.sw_version = d.get("sw_version")
+            existing.hw_version = d.get("hw_version")
+            devs_updated += 1
         else:
-            db.add(Device(
+            db.add(HADevice(
                 ha_instance_id=instance.id,
-                entity_id=item.entity_id,
-                domain=item.domain,
-                name=item.name,
-                state=item.state,
-                attributes=item.attributes,
+                ha_device_id=ha_device_id,
+                name=d.get("name", "Unknown"),
+                manufacturer=d.get("manufacturer"),
+                model=d.get("model"),
+                area=d.get("area"),
+                sw_version=d.get("sw_version"),
+                hw_version=d.get("hw_version"),
             ))
-    
-    # Delete devices no longer present
-    for entity_id, device in existing_by_entity.items():
-        if entity_id not in incoming_entity_ids:
-            await db.delete(device)
-    
+            devs_added += 1
+
+    await db.flush()
+    existing_devs = await db.execute(
+        select(HADevice).where(HADevice.ha_instance_id == instance.id)
+    )
+    existing_devs_map = {d.ha_device_id: d for d in existing_devs.scalars().all()}
+
+    existing_ents = await db.execute(
+        select(DeviceEntity).where(DeviceEntity.ha_instance_id == instance.id)
+    )
+    existing_ents_map = {e.entity_id: e for e in existing_ents.scalars().all()}
+    incoming_entity_ids = set()
+    ents_added = ents_updated = 0
+    for ent in entities_list:
+        eid = ent.get("entity_id")
+        if not eid:
+            continue
+        incoming_entity_ids.add(eid)
+        ha_dev_id = ent.get("ha_device_id")
+        dev_pk = None
+        if ha_dev_id:
+            d_obj = existing_devs_map.get(ha_dev_id)
+            if d_obj:
+                dev_pk = d_obj.id
+        existing = existing_ents_map.get(eid)
+        if existing:
+            existing.domain = ent.get("domain", existing.domain)
+            existing.name = ent.get("name", existing.name)
+            existing.state = ent.get("state", existing.state)
+            existing.attributes = ent.get("attributes", existing.attributes)
+            existing.ha_device_pk = dev_pk
+            ents_updated += 1
+        else:
+            db.add(DeviceEntity(
+                ha_instance_id=instance.id,
+                ha_device_pk=dev_pk,
+                entity_id=eid,
+                domain=ent.get("domain", ""),
+                name=ent.get("name", ""),
+                state=ent.get("state", "unknown"),
+                attributes=ent.get("attributes", {}),
+            ))
+            ents_added += 1
+
+    deleted = 0
+    for eid, e in list(existing_ents_map.items()):
+        if eid not in incoming_entity_ids:
+            await db.delete(e)
+            deleted += 1
+
     await db.commit()
-    
-    # Notify the user's mobile clients
+
     await ws_manager.broadcast_to_user(
         instance.user_id,
-        {"type": "devices_synced", "count": len(body.devices)},
+        {"type": "devices_synced",
+         "devices": devs_added + devs_updated,
+         "entities": ents_added + ents_updated},
     )
-    return {"status": "ok", "count": len(body.devices)}
-
+    return {
+        "status": "ok",
+        "devices_added": devs_added,
+        "devices_updated": devs_updated,
+        "entities_added": ents_added,
+        "entities_updated": ents_updated,
+        "entities_deleted": deleted,
+    }
 
 @ha_router.post("/{cloud_token}/state")
 async def report_state(
