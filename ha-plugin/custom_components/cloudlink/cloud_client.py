@@ -115,47 +115,94 @@ class CloudClient:
                     _LOGGER.exception("CloudLink: error handling message")
 
     async def _send_full_sync(self) -> None:
-        """Send full device list to cloud."""
+        """Send full state (devices + entities) to cloud.
+
+        Filters out HA's "config" and "diagnostic" entities
+        (e.g. stt, tts, update, repairs) - these aren't real devices.
+        Real entities have entity_category = None.
+        """
         try:
             all_states = list(self.hass.states.async_all())
         except Exception as e:
             _LOGGER.warning("CloudLink: async_all() failed: %s", e)
             return
-        
-        sample = [s.entity_id for s in all_states[:5]]
-        _LOGGER.warning(
-            "CloudLink: sync - hass.states has %d entities, sample=%s",
-            len(all_states), sample,
-        )
-        
-        devices = []
+
+        self._sync_count = getattr(self, "_sync_count", 0) + 1
+
+        device_reg = dr.async_get(self.hass)
+        area_reg = ar.async_get(self.hass)
+        entity_reg = er.async_get(self.hass)
+
+        # 1. Devices (from HA device registry)
+        devices_dict: dict[str, dict] = {}
+        for device in device_reg.devices.values():
+            area_name = None
+            if device.area_id:
+                area_obj = area_reg.async_get_area(device.area_id)
+                if area_obj:
+                    area_name = area_obj.name
+            devices_dict[device.id] = {
+                "name": device.name or "Unknown",
+                "manufacturer": device.manufacturer,
+                "model": device.model,
+                "area": area_name,
+                "sw_version": device.sw_version,
+                "hw_version": device.hw_version,
+            }
+
+        # 2. Entities (filtered by entity_category)
+        FILTERED_CONFIG = FILTERED_DIAGNOSTIC = 0
+        entities = []
         for state in all_states:
-            try:
-                devices.append({
-                    "entity_id": state.entity_id,
-                    "domain": state.domain,
-                    "name": state.name,
-                    "state": state.state,
-                    "attributes": dict(state.attributes),
-                })
-            except Exception as e:
-                _LOGGER.warning("CloudLink: error reading state %s: %s", 
-                              getattr(state, "entity_id", "?"), e)
-        
-        if not devices:
-            _LOGGER.warning("CloudLink: NO devices to sync! states.async_all() returned %d", len(all_states))
-            return  # Don't send empty sync (it would delete cloud devices)
-        
-        msg = json.dumps({"type": "device_sync", "devices": devices})
-        _LOGGER.warning("CloudLink: sending device_sync with %d devices (%d bytes)", 
-                       len(devices), len(msg))
-        
+            ent_reg_entry = entity_reg.async_get(state.entity_id)
+            category = ent_reg_entry.entity_category if ent_reg_entry else None
+            if category == "config":
+                FILTERED_CONFIG += 1
+                continue
+            if category == "diagnostic":
+                FILTERED_DIAGNOSTIC += 1
+                continue
+            ha_device_id = (
+                ent_reg_entry.device_id
+                if ent_reg_entry and ent_reg_entry.device_id
+                else None
+            )
+            entities.append({
+                "entity_id": state.entity_id,
+                "domain": state.domain,
+                "name": state.name,
+                "state": state.state,
+                "attributes": dict(state.attributes),
+                "ha_device_id": ha_device_id,
+                "entity_category": category,
+            })
+
+        if FILTERED_CONFIG or FILTERED_DIAGNOSTIC:
+            _LOGGER.warning(
+                "CloudLink: filtered %d config + %d diagnostic entities (stt/tts/update/repairs/...)",
+                FILTERED_CONFIG, FILTERED_DIAGNOSTIC,
+            )
+        _LOGGER.warning(
+            "CloudLink: sync #%d - %d devices, %d entities (after filter)",
+            self._sync_count, len(devices_dict), len(entities),
+        )
+
+        if not entities:
+            _LOGGER.warning("CloudLink: NO entities after filter (would delete all on cloud), skipping")
+            return
+
+        msg = json.dumps({
+            "type": "device_sync",
+            "devices": devices_dict,
+            "entities": entities,
+        })
         try:
             await self.ws.send(msg)
-            _LOGGER.warning("CloudLink: ✓ device_sync sent successfully")
+            _LOGGER.warning("CloudLink: device_sync sent OK (%d bytes)", len(msg))
         except Exception as e:
-            _LOGGER.warning("CloudLink: ✗ failed to send device_sync: %s", e)
+            _LOGGER.warning("CloudLink: failed to send device_sync: %s", e)
             raise
+
 
     async def _on_state_changed(self, event: Event) -> None:
         """Forward HA state changes to cloud."""
