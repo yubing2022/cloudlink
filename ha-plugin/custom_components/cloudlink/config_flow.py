@@ -5,10 +5,11 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import selector
 
-from .const import DEFAULT_CLOUD_URL, DOMAIN
+from .const import DEFAULT_CLOUD_URL, DOMAIN, USEFUL_DOMAINS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,4 +59,80 @@ class CloudLinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
+        )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Return the options flow handler."""
+        return CloudLinkOptionsFlow()
+
+
+
+class CloudLinkOptionsFlow(config_entries.OptionsFlow):
+    """Handle CloudLink options (single-mode domain filter, HomeKit-style)."""
+
+    # Migrate legacy per-list options into the unified shape. Anything not
+    # in USEFUL_DOMAINS is silently dropped during migration.
+    async def _normalised_current(self) -> dict[str, Any]:
+        options = self.config_entry.options
+        if "mode" in options:
+            return {
+                "mode": options.get("mode", "exclude"),
+                "domains": options.get("domains", []),
+            }
+        # Legacy {include_domains, exclude_domains}
+        if options.get("include_domains"):
+            return {"mode": "include", "domains": options["include_domains"]}
+        if options.get("exclude_domains"):
+            return {"mode": "exclude", "domains": options["exclude_domains"]}
+        return {"mode": "exclude", "domains": []}
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current = await self._normalised_current()
+
+        # Build the domain list: only USEFUL domains that actually have
+        # entities in this HA. Anything else (sun, person, weather, ...)
+        # is hardcoded-dropped at sync time and never appears here.
+        available_domains = sorted({
+            state.domain
+            for state in self.hass.states.async_all()
+            if state.domain in USEFUL_DOMAINS
+        })
+
+        schema = vol.Schema({
+            vol.Required(
+                "mode", default=current["mode"],
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        {"value": "exclude", "label": "Exclude selected domains"},
+                        {"value": "include", "label": "Include only selected domains"},
+                    ],
+                    multiple=False,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                ),
+            ),
+            vol.Optional(
+                "domains", default=current["domains"],
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=available_domains,
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                ),
+            ),
+        })
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
         )

@@ -17,5 +17,17 @@
     "abort": {
       "already_configured": "This cloud_token is already configured"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Domain filter",
+        "description": "Choose whether to exclude selected domains from sync, or only include the selected ones. Informational HA entities (sun, person, weather, etc.) are filtered automatically and never appear here.",
+        "data": {
+          "mode": "Filter mode",
+          "domains": "Domains"
+        }
+      }
+    }
   }
 }

@@ -13,6 +13,7 @@ from websockets.exceptions import ConnectionClosed
 from .const import (
     DOMAIN,
     HEARTBEAT_INTERVAL_SECONDS,
+    INTERNAL_DOMAINS,
     INITIAL_BACKOFF_SECONDS,
     MAX_BACKOFF_SECONDS,
 )
@@ -25,15 +26,42 @@ _LOGGER.setLevel(logging.WARNING)
 class CloudClient:
     """Manages WebSocket connection to CloudLink cloud."""
 
-    def __init__(self, hass: HomeAssistant, cloud_url: str, cloud_token: str):
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        cloud_url: str,
+        cloud_token: str,
+        include_domains: list[str] | None = None,
+        exclude_domains: list[str] | None = None,
+    ):
         self.hass = hass
         self.cloud_url = cloud_url.rstrip("/")
         self.cloud_token = cloud_token
+        self.include_domains = set(include_domains or [])
+        self.exclude_domains = set(exclude_domains or [])
         self.ws = None
         self._stopped = False
         self._backoff = INITIAL_BACKOFF_SECONDS
         self._unsub_state = None
         self._unsub_started = None
+
+    def _domain_allowed(self, domain: str) -> bool:
+        """Apply include/exclude domain filter.
+
+        - INTERNAL_DOMAINS (sun, person, weather, ...) are NEVER allowed,
+          regardless of user config — pure informational / HA-internal types
+          that have no business syncing to a phone app.
+        - exclude_domains always wins (blacklist first)
+        - include_domains, if non-empty, is a whitelist
+        - if both empty: only INTERNAL_DOMAINS are dropped
+        """
+        if domain in INTERNAL_DOMAINS:
+            return False
+        if domain in self.exclude_domains:
+            return False
+        if self.include_domains and domain not in self.include_domains:
+            return False
+        return True
 
     async def start(self) -> None:
         """Start the connection loop."""
@@ -150,10 +178,13 @@ class CloudClient:
                 "hw_version": device.hw_version,
             }
 
-        # 2. Entities (filtered by entity_category)
-        FILTERED_CONFIG = FILTERED_DIAGNOSTIC = 0
+        # 2. Entities (filtered by entity_category + user-configured domain filter)
+        FILTERED_CONFIG = FILTERED_DIAGNOSTIC = FILTERED_DOMAIN = 0
         entities = []
         for state in all_states:
+            if not self._domain_allowed(state.domain):
+                FILTERED_DOMAIN += 1
+                continue
             ent_reg_entry = entity_reg.async_get(state.entity_id)
             category = ent_reg_entry.entity_category if ent_reg_entry else None
             if category == "config":
@@ -181,6 +212,11 @@ class CloudClient:
             _LOGGER.warning(
                 "CloudLink: filtered %d config + %d diagnostic entities (stt/tts/update/repairs/...)",
                 FILTERED_CONFIG, FILTERED_DIAGNOSTIC,
+            )
+        if FILTERED_DOMAIN:
+            _LOGGER.warning(
+                "CloudLink: filtered %d entities by domain filter (include=%s exclude=%s)",
+                FILTERED_DOMAIN, sorted(self.include_domains), sorted(self.exclude_domains),
             )
         _LOGGER.warning(
             "CloudLink: sync #%d - %d devices, %d entities (after filter)",
@@ -211,6 +247,9 @@ class CloudClient:
         if not new or (old and old.state == new.state):
             return
         if not self.ws:
+            return
+        # Apply domain filter so excluded/notincluded entities never reach cloud
+        if not self._domain_allowed(new.domain):
             return
         # Also include ha_device_id so backend can update the right device
         ha_device_id = None
