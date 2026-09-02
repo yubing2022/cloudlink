@@ -58,7 +58,15 @@ fun AppNavGraph(
             LoginScreen(onLoginSuccess = { /* nav effect handles it */ })
         }
         composable("home") {
-            HomeScreen(onLogout = { /* nav effect handles it */ })
+            HomeScreen(
+                onLogout = { /* nav effect handles it */ },
+                onSettings = { navController.navigate("settings") },
+            )
+        }
+        composable("settings") {
+            com.yourname.cloudlink.ui.settings.SettingsScreen(
+                onBack = { navController.popBackStack() },
+            )
         }
     }
 }

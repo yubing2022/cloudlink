@@ -25,7 +25,8 @@
         "description": "Choose whether to exclude selected domains from sync, or only include the selected ones. Informational HA entities (sun, person, weather, etc.) are filtered automatically and never appear here.",
         "data": {
           "mode": "Filter mode",
-          "domains": "Domains"
+          "domains": "Domains",
+          "entity_id_patterns": "Exclude entity ID patterns (one fnmatch glob per line, e.g. sensor.backup_* or *_epson_*)"
         }
       }
     }

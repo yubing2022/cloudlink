@@ -14,7 +14,7 @@ PLATFORMS = []
 
 
 
-def _resolve_filter(options: dict) -> tuple[set[str], set[str]]:
+def _resolve_filter(options: dict) -> tuple[set[str], set[str], set[str]]:
     """Resolve the single-mode filter (HomeKit-style) into include/exclude sets.
 
     The user picks ONE mode (include or exclude) and a list of domains.
@@ -22,10 +22,14 @@ def _resolve_filter(options: dict) -> tuple[set[str], set[str]]:
     is unconditionally dropped at sync time — see INTERNAL_DOMAINS and the
     _domain_allowed check in CloudClient.
 
+    entity_id_patterns (fnmatch globs) is a separate always-on filter
+    applied on top of the mode/domain filter.
+
     Handles backwards-compat with the legacy {include_domains, exclude_domains}
     shape: whichever legacy list was non-empty wins.
     """
-    if "mode" in options:
+    patterns = set(options.get("entity_id_patterns") or [])
+    if "mode" in options or "entity_id_patterns" in options:
         mode = options.get("mode", "exclude")
         domains = set(options.get("domains") or [])
     else:
@@ -42,8 +46,8 @@ def _resolve_filter(options: dict) -> tuple[set[str], set[str]]:
             domains = set(INTERNAL_DOMAINS)
 
     if mode == "include":
-        return domains, set()
-    return set(), domains
+        return domains, set(), patterns
+    return set(), domains, patterns
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -51,12 +55,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     cloud_url = entry.data["cloud_url"]
     cloud_token = entry.data["cloud_token"]
 
-    include_domains, exclude_domains = _resolve_filter(entry.options)
+    include_domains, exclude_domains, entity_id_patterns = _resolve_filter(entry.options)
 
     client = CloudClient(
         hass, cloud_url, cloud_token,
         include_domains=list(include_domains),
         exclude_domains=list(exclude_domains),
+        exclude_entity_patterns=list(entity_id_patterns),
     )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = client
 

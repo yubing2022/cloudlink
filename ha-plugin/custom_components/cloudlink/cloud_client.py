@@ -33,12 +33,18 @@ class CloudClient:
         cloud_token: str,
         include_domains: list[str] | None = None,
         exclude_domains: list[str] | None = None,
+        exclude_entity_patterns: list[str] | None = None,
     ):
+        import fnmatch
         self.hass = hass
         self.cloud_url = cloud_url.rstrip("/")
         self.cloud_token = cloud_token
         self.include_domains = set(include_domains or [])
         self.exclude_domains = set(exclude_domains or [])
+        # Patterns use fnmatch glob syntax; empty list = no per-entity filter.
+        self.exclude_entity_patterns = [
+            p for p in (exclude_entity_patterns or []) if p.strip()
+        ]
         self.ws = None
         self._stopped = False
         self._backoff = INITIAL_BACKOFF_SECONDS
@@ -61,6 +67,21 @@ class CloudClient:
             return False
         if self.include_domains and domain not in self.include_domains:
             return False
+        return True
+
+    def _entity_allowed(self, entity_id: str) -> bool:
+        """Apply domain filter + entity_id pattern filter.
+
+        Patterns are checked against entity_id via fnmatch (glob-style:
+        *, ?, [seq] all work). Empty patterns list = pass-through.
+        """
+        if not self._domain_allowed(entity_id.split(".", 1)[0]):
+            return False
+        if self.exclude_entity_patterns:
+            import fnmatch
+            for pattern in self.exclude_entity_patterns:
+                if fnmatch.fnmatch(entity_id, pattern):
+                    return False
         return True
 
     async def start(self) -> None:
@@ -179,11 +200,15 @@ class CloudClient:
             }
 
         # 2. Entities (filtered by entity_category + user-configured domain filter)
-        FILTERED_CONFIG = FILTERED_DIAGNOSTIC = FILTERED_DOMAIN = 0
+        FILTERED_CONFIG = FILTERED_DIAGNOSTIC = FILTERED_DOMAIN = FILTERED_PATTERN = 0
         entities = []
         for state in all_states:
-            if not self._domain_allowed(state.domain):
-                FILTERED_DOMAIN += 1
+            if not self._entity_allowed(state.entity_id):
+                # Distinguish domain vs pattern drops for logging clarity
+                if not self._domain_allowed(state.domain):
+                    FILTERED_DOMAIN += 1
+                else:
+                    FILTERED_PATTERN += 1
                 continue
             ent_reg_entry = entity_reg.async_get(state.entity_id)
             category = ent_reg_entry.entity_category if ent_reg_entry else None
@@ -218,6 +243,11 @@ class CloudClient:
                 "CloudLink: filtered %d entities by domain filter (include=%s exclude=%s)",
                 FILTERED_DOMAIN, sorted(self.include_domains), sorted(self.exclude_domains),
             )
+        if FILTERED_PATTERN:
+            _LOGGER.warning(
+                "CloudLink: filtered %d entities by entity_id pattern (patterns=%s)",
+                FILTERED_PATTERN, self.exclude_entity_patterns,
+            )
         _LOGGER.warning(
             "CloudLink: sync #%d - %d devices, %d entities (after filter)",
             self._sync_count, len(devices_dict), len(entities),
@@ -248,8 +278,9 @@ class CloudClient:
             return
         if not self.ws:
             return
-        # Apply domain filter so excluded/notincluded entities never reach cloud
-        if not self._domain_allowed(new.domain):
+        # Apply domain + entity-id pattern filter so excluded/notincluded
+        # entities never reach cloud
+        if not self._entity_allowed(new.entity_id):
             return
         # Also include ha_device_id so backend can update the right device
         ha_device_id = None

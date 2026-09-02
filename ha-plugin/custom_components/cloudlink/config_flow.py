@@ -78,23 +78,36 @@ class CloudLinkOptionsFlow(config_entries.OptionsFlow):
     # in USEFUL_DOMAINS is silently dropped during migration.
     async def _normalised_current(self) -> dict[str, Any]:
         options = self.config_entry.options
-        if "mode" in options:
+        if "mode" in options or "entity_id_patterns" in options:
             return {
                 "mode": options.get("mode", "exclude"),
                 "domains": options.get("domains", []),
+                "entity_id_patterns": options.get("entity_id_patterns", []),
             }
         # Legacy {include_domains, exclude_domains}
         if options.get("include_domains"):
             return {"mode": "include", "domains": options["include_domains"]}
         if options.get("exclude_domains"):
             return {"mode": "exclude", "domains": options["exclude_domains"]}
-        return {"mode": "exclude", "domains": []}
+        return {"mode": "exclude", "domains": [], "entity_id_patterns": []}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage the options."""
         if user_input is not None:
+            # Normalise entity_id_patterns from multiline string to list of globs
+            raw_patterns = user_input.get("entity_id_patterns", "")
+            if isinstance(raw_patterns, str):
+                patterns = [
+                    line.strip()
+                    for line in raw_patterns.splitlines()
+                    if line.strip()
+                ]
+            else:
+                # Already a list (legacy / programmatic submit)
+                patterns = list(raw_patterns)
+            user_input["entity_id_patterns"] = patterns
             return self.async_create_entry(title="", data=user_input)
 
         current = await self._normalised_current()
@@ -129,6 +142,17 @@ class CloudLinkOptionsFlow(config_entries.OptionsFlow):
                     multiple=True,
                     mode=selector.SelectSelectorMode.DROPDOWN,
                 ),
+            ),
+            vol.Optional(
+                "entity_id_patterns",
+                default=("\n".join(current.get("entity_id_patterns") or [])),
+                description=(
+                    "One fnmatch glob per line (e.g. sensor.backup_* or *_epson_*). "
+                    "Entities whose entity_id matches any pattern are excluded from sync, "
+                    "regardless of the domain filter above."
+                ),
+            ): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True),
             ),
         })
 

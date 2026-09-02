@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,6 +28,7 @@ import com.yourname.cloudlink.data.model.HomeDevice
 @Composable
 fun HomeScreen(
     onLogout: () -> Unit,
+    onSettings: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -43,6 +45,9 @@ fun HomeScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onSettings) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "设置")
+                    }
                     IconButton(onClick = viewModel::loadDevices) {
                         Icon(Icons.Default.Refresh, contentDescription = "刷新")
                     }
@@ -69,9 +74,22 @@ fun HomeScreen(
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("还没有设备")
                     }
+                state.visibleDevices.isEmpty() && state.devices.isNotEmpty() ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("所有设备都已被隐藏")
+                            Text(
+                                "点击右上角 ⋮ → 设置 可以选择要显示的设备",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Button(onClick = onSettings) { Text("打开设置") }
+                        }
+                    }
                 else ->
                     DeviceList(
-                        devices = state.devices,
+                        devices = state.visibleDevices,
                         onEntityAction = viewModel::control,
                         onDeviceToggle = viewModel::togglePrimary,
                     )
