@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decode_token
 from app.database import AsyncSessionLocal
 from app.models.ha_instance import HAInstance
-from app.models.device import DeviceEntity
+from app.models.device import DeviceEntity, HADevice
 from app.models.user import User
 from app.schemas.ha import DeviceSyncItem
 from app.ws.manager import ws_manager
@@ -24,62 +24,121 @@ router = APIRouter()
 
 
 async def _handle_device_sync(instance_id: int, raw_msg: dict) -> int:
-    """Process a device_sync WS message. Returns number of devices synced."""
-    try:
-        devices_data = raw_msg.get("devices", [])
-    except Exception as e:
-        logger.warning("device_sync: invalid payload: %s", e)
+    """Process a device_sync WS message.
+
+    Supports two formats:
+      New: {"devices": {ha_device_id: {name, manufacturer, ...}},
+            "entities": [{entity_id, domain, ..., ha_device_id, entity_category}]}
+      Old (backwards compat): {"devices": [{entity_id, domain, name, state, ...}]}
+    """
+    # Detect format and normalise into (devices_dict, entities_list)
+    if "entities" in raw_msg and isinstance(raw_msg.get("entities"), list):
+        # New format
+        devices_dict = raw_msg.get("devices") or {}
+        entities_list = raw_msg["entities"]
+    elif "devices" in raw_msg and isinstance(raw_msg["devices"], list):
+        # Old format: wrap each as its own synthetic device
+        devices_dict = {}
+        entities_list = []
+        for item in raw_msg["devices"]:
+            eid = item.get("entity_id", f"unknown-{len(entities_list)}")
+            fake_did = f"legacy-{eid}"
+            devices_dict[fake_did] = {"name": item.get("name", eid)}
+            entities_list.append({**item, "ha_device_id": fake_did})
+    else:
+        logger.warning("device_sync: unrecognised payload shape")
         return 0
-    if not isinstance(devices_data, list):
-        return 0
-    
+
     async with AsyncSessionLocal() as db:
-        existing_res = await db.execute(
+        # 1. Upsert HADevice rows
+        existing_devs = await db.execute(
+            select(HADevice).where(HADevice.ha_instance_id == instance_id)
+        )
+        existing_devs_map = {d.ha_device_id: d for d in existing_devs.scalars().all()}
+        devs_added = devs_updated = 0
+        for ha_device_id, d in devices_dict.items():
+            existing = existing_devs_map.get(ha_device_id)
+            if existing:
+                existing.name = d.get("name", existing.name)
+                existing.manufacturer = d.get("manufacturer")
+                existing.model = d.get("model")
+                existing.area = d.get("area")
+                existing.sw_version = d.get("sw_version")
+                existing.hw_version = d.get("hw_version")
+                devs_updated += 1
+            else:
+                db.add(HADevice(
+                    ha_instance_id=instance_id,
+                    ha_device_id=ha_device_id,
+                    name=d.get("name", "Unknown"),
+                    manufacturer=d.get("manufacturer"),
+                    model=d.get("model"),
+                    area=d.get("area"),
+                    sw_version=d.get("sw_version"),
+                    hw_version=d.get("hw_version"),
+                ))
+                devs_added += 1
+
+        await db.flush()
+
+        # 2. Upsert DeviceEntity rows
+        existing_devs = await db.execute(
+            select(HADevice).where(HADevice.ha_instance_id == instance_id)
+        )
+        existing_devs_map = {d.ha_device_id: d for d in existing_devs.scalars().all()}
+        existing_ents = await db.execute(
             select(DeviceEntity).where(DeviceEntity.ha_instance_id == instance_id)
         )
-        existing_by_entity = {d.entity_id: d for d in existing_res.scalars().all()}
+        existing_ents_map = {e.entity_id: e for e in existing_ents.scalars().all()}
         incoming_entity_ids = set()
-        
-        added = updated = 0
-        for item_dict in devices_data:
-            try:
-                item = DeviceSyncItem(**item_dict)
-            except ValidationError as e:
-                logger.warning("device_sync: invalid item: %s", e)
+        ents_added = ents_updated = 0
+        for ent in entities_list:
+            eid = ent.get("entity_id")
+            if not eid:
                 continue
-            incoming_entity_ids.add(item.entity_id)
-            device = existing_by_entity.get(item.entity_id)
-            if device:
-                device.domain = item.domain
-                device.name = item.name
-                device.state = item.state
-                device.attributes = item.attributes
-                device.last_state_change = datetime.now(timezone.utc)
-                updated += 1
+            incoming_entity_ids.add(eid)
+            ha_dev_id = ent.get("ha_device_id")
+            dev_pk = None
+            if ha_dev_id:
+                d_obj = existing_devs_map.get(ha_dev_id)
+                if d_obj:
+                    dev_pk = d_obj.id
+            existing = existing_ents_map.get(eid)
+            if existing:
+                existing.domain = ent.get("domain", existing.domain)
+                existing.name = ent.get("name", existing.name)
+                existing.state = ent.get("state", existing.state)
+                existing.attributes = ent.get("attributes", existing.attributes)
+                existing.ha_device_pk = dev_pk
+                existing.entity_category = ent.get("entity_category")
+                ents_updated += 1
             else:
                 db.add(DeviceEntity(
                     ha_instance_id=instance_id,
-                    entity_id=item.entity_id,
-                    domain=item.domain,
-                    name=item.name,
-                    state=item.state,
-                    attributes=item.attributes,
+                    ha_device_pk=dev_pk,
+                    entity_id=eid,
+                    domain=ent.get("domain", ""),
+                    name=ent.get("name", ""),
+                    state=ent.get("state", "unknown"),
+                    attributes=ent.get("attributes", {}),
+                    entity_category=ent.get("entity_category"),
                 ))
-                added += 1
-        
-        # Delete devices no longer present
+                ents_added += 1
+
+        # 3. Delete entities not in incoming list (replace strategy)
         deleted = 0
-        for entity_id, device in list(existing_by_entity.items()):
-            if entity_id not in incoming_entity_ids:
-                await db.delete(device)
+        for eid, e in list(existing_ents_map.items()):
+            if eid not in incoming_entity_ids:
+                await db.delete(e)
                 deleted += 1
-        
+
         await db.commit()
         logger.info(
-            "device_sync for instance %d: +%d ~%d -%d (total incoming: %d)",
-            instance_id, added, updated, deleted, len(devices_data),
+            "device_sync for instance %d: devices +%d ~%d, entities +%d ~%d -%d (incoming: %d)",
+            instance_id, devs_added, devs_updated,
+            ents_added, ents_updated, deleted, len(entities_list),
         )
-        return added + updated
+        return ents_added + ents_updated
 
 
 async def _handle_state_change(instance_id: int, raw_msg: dict, user_id: int) -> bool:
