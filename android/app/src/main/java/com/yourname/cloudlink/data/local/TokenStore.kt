@@ -32,6 +32,7 @@ class TokenStore @Inject constructor(
     val lastEmail: Flow<String?> = context.dataStore.data.map { it[KEY_LAST_EMAIL] }
 
     suspend fun getAccessToken(): String? = context.dataStore.data.first()[KEY_ACCESS]
+    suspend fun getRefreshToken(): String? = context.dataStore.data.first()[KEY_REFRESH]
     suspend fun getLastEmail(): String? = context.dataStore.data.first()[KEY_LAST_EMAIL]
 
     suspend fun save(access: String, refresh: String, email: String) {

@@ -26,12 +26,15 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideOkHttp(): OkHttpClient {
+    fun provideOkHttp(authInterceptor: AuthInterceptor): OkHttpClient {
         val log = HttpLoggingInterceptor().apply {
             level = HttpLoggingInterceptor.Level.BASIC
         }
         return OkHttpClient.Builder()
+            // authInterceptor MUST be the last added so it wraps the
+            // logging interceptor (logs see the final request headers).
             .addInterceptor(log)
+            .addInterceptor(authInterceptor)
             .build()
     }
 

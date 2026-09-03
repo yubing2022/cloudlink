@@ -20,3 +20,9 @@ data class TokenResponse(
     val refresh_token: String,
     val token_type: String = "bearer",
 )
+
+
+@JsonClass(generateAdapter = true)
+data class RefreshRequest(
+    val refresh_token: String,
+)

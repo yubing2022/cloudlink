@@ -3,6 +3,7 @@ package com.yourname.cloudlink.data.api
 import com.yourname.cloudlink.data.model.HomeDevice
 import com.yourname.cloudlink.data.model.DeviceActionRequest
 import com.yourname.cloudlink.data.model.LoginRequest
+import com.yourname.cloudlink.data.model.RefreshRequest
 import com.yourname.cloudlink.data.model.RegisterRequest
 import com.yourname.cloudlink.data.model.TokenResponse
 import retrofit2.http.Body
@@ -19,7 +20,7 @@ interface ApiService {
     suspend fun login(@Body req: LoginRequest): TokenResponse
 
     @POST("api/auth/refresh")
-    suspend fun refresh(@Header("Authorization") refresh: String): TokenResponse
+    suspend fun refresh(@Body body: RefreshRequest): TokenResponse
 
     /** Returns devices (with their entities nested). Backend now groups
      *  entities by HA device registry entry. */
