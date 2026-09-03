@@ -23,7 +23,13 @@ data class HomeUiState(
     val devices: List<HomeDevice> = emptyList(),
     /** Subset of `devices` after applying the user-configured device-hide filter. */
     val visibleDevices: List<HomeDevice> = emptyList(),
+    /** Initial full-screen load (no devices yet). */
     val isLoading: Boolean = false,
+    /** Manual refresh via the toolbar button — shows a top-bar spinner. */
+    val isRefreshing: Boolean = false,
+    /** Timestamp of the last successful refresh; surfaced in the UI so the
+     *  user can see when the data was last fetched. */
+    val lastRefreshAt: Long = 0L,
     val error: String? = null,
     val wsConnected: Boolean = false,
 )
@@ -60,7 +66,14 @@ class HomeViewModel @Inject constructor(
     }
 
     fun loadDevices() {
-        _state.value = _state.value.copy(isLoading = true, error = null)
+        // If we already have devices on screen, treat this as a refresh
+        // (show the top-bar spinner) rather than a full-screen re-load.
+        val isRefresh = _state.value.devices.isNotEmpty()
+        _state.value = _state.value.copy(
+            isLoading = !isRefresh,
+            isRefreshing = isRefresh,
+            error = null,
+        )
         viewModelScope.launch {
             try {
                 val token = tokenStore.getAccessToken() ?: return@launch
@@ -69,16 +82,22 @@ class HomeViewModel @Inject constructor(
                     devices = rawDevices,
                     visibleDevices = rawDevices.filterNot { it.haDeviceId in _hiddenIds.value },
                     isLoading = false,
+                    isRefreshing = false,
+                    lastRefreshAt = System.currentTimeMillis(),
                 )
+                // Reconnect WS so any state changes that happened while we
+                // were offline are reflected immediately.
                 ws.connect("ws://118.31.225.109:8000", token)
             } catch (e: HttpException) {
                 _state.value = _state.value.copy(
                     isLoading = false,
+                    isRefreshing = false,
                     error = "加载失败: HTTP ${e.code()}",
                 )
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     isLoading = false,
+                    isRefreshing = false,
                     error = "网络错误: ${e.message}",
                 )
             }

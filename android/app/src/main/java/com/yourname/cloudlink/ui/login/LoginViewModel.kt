@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.yourname.cloudlink.data.api.ApiService
 import com.yourname.cloudlink.data.local.TokenStore
+import kotlinx.coroutines.flow.first
 import com.yourname.cloudlink.data.model.LoginRequest
 import com.yourname.cloudlink.data.model.RegisterRequest
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -28,6 +29,18 @@ class LoginViewModel @Inject constructor(
 ) : ViewModel() {
 
     val state = MutableStateFlow(LoginUiState())
+
+    init {
+        // Pre-fill the email field with the last-used email so the user
+        // only needs to type their password after re-installing or after
+        // their token expires.
+        viewModelScope.launch {
+            val last = tokenStore.getLastEmail().orEmpty()
+            if (last.isNotEmpty() && state.value.email.isEmpty()) {
+                state.value = state.value.copy(email = last)
+            }
+        }
+    }
 
     fun setEmail(v: String) { state.value = state.value.copy(email = v, error = null) }
     fun setPassword(v: String) { state.value = state.value.copy(password = v, error = null) }

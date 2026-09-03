@@ -20,6 +20,7 @@ private val Context.dataStore by preferencesDataStore(name = "cloudlink_prefs")
 private val KEY_ACCESS = stringPreferencesKey("access_token")
 private val KEY_REFRESH = stringPreferencesKey("refresh_token")
 private val KEY_EMAIL = stringPreferencesKey("email")
+private val KEY_LAST_EMAIL = stringPreferencesKey("last_email")
 
 @Singleton
 class TokenStore @Inject constructor(
@@ -28,14 +29,17 @@ class TokenStore @Inject constructor(
     val accessToken: Flow<String?> = context.dataStore.data.map { it[KEY_ACCESS] }
     val refreshToken: Flow<String?> = context.dataStore.data.map { it[KEY_REFRESH] }
     val email: Flow<String?> = context.dataStore.data.map { it[KEY_EMAIL] }
+    val lastEmail: Flow<String?> = context.dataStore.data.map { it[KEY_LAST_EMAIL] }
 
     suspend fun getAccessToken(): String? = context.dataStore.data.first()[KEY_ACCESS]
+    suspend fun getLastEmail(): String? = context.dataStore.data.first()[KEY_LAST_EMAIL]
 
     suspend fun save(access: String, refresh: String, email: String) {
         context.dataStore.edit {
             it[KEY_ACCESS] = access
             it[KEY_REFRESH] = refresh
             it[KEY_EMAIL] = email
+            it[KEY_LAST_EMAIL] = email  // remember for next login screen
         }
     }
 
@@ -43,6 +47,7 @@ class TokenStore @Inject constructor(
         context.dataStore.edit {
             it.remove(KEY_ACCESS)
             it.remove(KEY_REFRESH)
+            // keep KEY_LAST_EMAIL so login form prefills on next launch
             it.remove(KEY_EMAIL)
         }
     }

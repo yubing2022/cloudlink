@@ -48,8 +48,23 @@ fun HomeScreen(
                     IconButton(onClick = onSettings) {
                         Icon(Icons.Default.MoreVert, contentDescription = "设置")
                     }
-                    IconButton(onClick = viewModel::loadDevices) {
-                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                    // Refresh: while in flight, swap the static icon for a
+                    // spinning indicator so the user gets clear visual
+                    // feedback that something happened.
+                    if (state.isRefreshing) {
+                        androidx.compose.foundation.layout.Box(
+                            modifier = Modifier.size(40.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                    } else {
+                        IconButton(onClick = viewModel::loadDevices) {
+                            Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                        }
                     }
                     IconButton(onClick = { viewModel.logout(onLogout) }) {
                         Icon(Icons.Filled.ExitToApp, contentDescription = "退出")
