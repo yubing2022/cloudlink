@@ -67,3 +67,10 @@ data class DeviceActionRequest(
 data class ApiError(
     val detail: String? = null,
 )
+
+
+@JsonClass(generateAdapter = true)
+data class DeviceIconResponse(
+    val model: String,
+    @com.squareup.moshi.Json(name = "icon_url") val iconUrl: String,
+)

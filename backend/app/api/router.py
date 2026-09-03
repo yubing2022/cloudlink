@@ -9,3 +9,8 @@ api_router.include_router(ha.user_router)
 api_router.include_router(ha.ha_router)
 api_router.include_router(devices.router)
 api_router.include_router(ws.router)
+try:
+    from app.api.icons import router as icons_router
+    api_router.include_router(icons_router)
+except ImportError:
+    pass

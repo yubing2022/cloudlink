@@ -22,6 +22,9 @@ interface ApiService {
     @POST("api/auth/refresh")
     suspend fun refresh(@Body body: RefreshRequest): TokenResponse
 
+    @GET("api/device-icon")
+    suspend fun getDeviceIcon(@retrofit2.http.Query("model") model: String): com.yourname.cloudlink.data.model.DeviceIconResponse
+
     /** Returns devices (with their entities nested). Backend now groups
      *  entities by HA device registry entry. */
     @GET("api/devices")

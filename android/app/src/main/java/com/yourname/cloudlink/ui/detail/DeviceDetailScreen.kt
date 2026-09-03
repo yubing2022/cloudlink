@@ -12,11 +12,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.yourname.cloudlink.data.icon.DeviceIconImage
 import com.yourname.cloudlink.data.model.Entity
 import com.yourname.cloudlink.data.model.HomeDevice
 
@@ -103,11 +105,13 @@ private fun DeviceHeader(device: HomeDevice) {
     Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.Home,
+                // Use the device's photo (from miot-spec.com) when available,
+                // otherwise fall back to a generic Material icon.
+                DeviceIconImage(
+                    model = device.model,
+                    size = 56.dp,
                     contentDescription = null,
-                    modifier = Modifier.size(48.dp),
-                    tint = MaterialTheme.colorScheme.primary,
+                    contentScale = ContentScale.Fit,
                 )
                 Spacer(Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {

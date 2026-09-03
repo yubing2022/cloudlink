@@ -32,11 +32,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.yourname.cloudlink.data.icon.DeviceIconImage
 import com.yourname.cloudlink.data.model.Entity
 import com.yourname.cloudlink.data.model.HomeDevice
 
@@ -238,23 +240,35 @@ private fun DeviceCard(
 private fun DeviceIconLarge(device: HomeDevice) {
     val primary = device.primaryEntity
     val onState = primary?.state in ON_STATES
+    val bg = if (onState) MaterialTheme.colorScheme.primaryContainer
+    else MaterialTheme.colorScheme.surfaceVariant
     Box(
         modifier = Modifier
             .size(64.dp)
             .clip(CircleShape)
-            .background(
-                if (onState) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceVariant
-            ),
+            .background(bg),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            imageVector = iconFor(device, primary),
-            contentDescription = null,
-            modifier = Modifier.size(36.dp),
-            tint = if (onState) MaterialTheme.colorScheme.onPrimaryContainer
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // Try miot-spec.com icon first; fall back to per-domain Material icon
+        // (iconFor() picks a sensible default based on primary entity domain).
+        val url = device.model  // model e.g. "yeelink.light.mbulb3"
+        if (url.isNullOrBlank()) {
+            Icon(
+                imageVector = iconFor(device, primary),
+                contentDescription = null,
+                modifier = Modifier.size(36.dp),
+                tint = if (onState) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            DeviceIconImage(
+                model = url,
+                size = 56.dp,
+                fallback = iconFor(device, primary),
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+            )
+        }
     }
 }
 
