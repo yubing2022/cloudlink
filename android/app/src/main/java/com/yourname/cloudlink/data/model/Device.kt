@@ -23,7 +23,47 @@ data class Entity(
     @Json(name = "entity_category") val entityCategory: String? = null,
     @Json(name = "last_state_change") val lastStateChange: String? = null,
     @Json(name = "updated_at") val updatedAt: String? = null,
-)
+) {
+    /**
+     * True if this light supports brightness control. Looks at
+     * `supported_color_modes` first (the modern API); falls back to the
+     * `supported_features` bitmask.
+     *
+     * Rule:
+     *  - `["onoff"]` only         → no brightness
+     *  - any other mode present   → supports brightness (color_temp,
+     *                               hs, rgb, rgbw, rgbww, white all imply
+     *                               PWM-brightness support)
+     *  - `unknown` mode           → no brightness
+     *  - supported_color_modes missing → trust supported_features bit 0
+     */
+    val supportsBrightness: Boolean
+        get() {
+            val modes = (attributes["supported_color_modes"] as? List<*>)
+                ?.mapNotNull { it as? String }
+                ?: emptyList()
+            if (modes.isNotEmpty()) {
+                if ("onoff" in modes || "unknown" in modes) return false
+                return modes.isNotEmpty()
+            }
+            val features = (attributes["supported_features"] as? Number)?.toInt() ?: 0
+            return (features and 1) != 0  // bit 0 = SUPPORT_BRIGHTNESS
+        }
+
+    /**
+     * Current brightness 0-255, or null if not reported (e.g. the light
+     * is off and HA has no last-known value).
+     */
+    val brightness: Int?
+        get() = (attributes["brightness"] as? Number)?.toInt()
+
+    /**
+     * When entity is off, brightness attribute is usually null. We fall
+     * back to the last-known brightness (provided by the caller) so the
+     * slider doesn't snap to 0 the moment the light turns off.
+     */
+    fun effectiveBrightness(fallback: Int = 128): Int = brightness ?: fallback
+}
 
 /**
  * One physical/logical device from HA's device registry.

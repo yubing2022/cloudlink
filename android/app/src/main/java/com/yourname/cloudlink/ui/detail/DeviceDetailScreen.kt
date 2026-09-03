@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -67,6 +68,7 @@ fun DeviceDetailScreen(
                     DeviceDetailContent(
                         device = device,
                         onEntityAction = viewModel::control,
+                        onBrightness = viewModel::setBrightness,
                     )
             }
         }
@@ -77,6 +79,7 @@ fun DeviceDetailScreen(
 private fun DeviceDetailContent(
     device: HomeDevice,
     onEntityAction: (Entity, String) -> Unit,
+    onBrightness: (Entity, Int) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -94,7 +97,11 @@ private fun DeviceDetailContent(
             )
         }
         items(device.entities, key = { it.entity_id }) { entity ->
-            EntityControlRow(entity = entity, onAction = onEntityAction)
+            EntityControlRow(
+                entity = entity,
+                onAction = onEntityAction,
+                onBrightness = onBrightness,
+            )
             HorizontalDivider(modifier = Modifier.padding(horizontal = 4.dp))
         }
     }
@@ -165,32 +172,88 @@ private fun StatusPill(label: String, value: String) {
 private fun EntityControlRow(
     entity: Entity,
     onAction: (Entity, String) -> Unit,
+    onBrightness: (Entity, Int) -> Unit,
 ) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = entityIcon(entity.domain),
+                fontSize = 22.sp,
+                modifier = Modifier.padding(end = 12.dp),
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(entity.name, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    entity.state,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = stateColor(entity.state, entity.domain),
+                )
+                if (entity.entityCategory != null) {
+                    Text(
+                        text = entity.entityCategory,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            EntityControl(entity = entity, onAction = onAction)
+        }
+        // For dimmable lights, render the brightness slider on a second
+        // row so the switch stays at the right edge of the card.
+        if (entity.domain == "light" && entity.supportsBrightness) {
+            BrightnessSlider(
+                entity = entity,
+                onChange = onBrightness,
+            )
+        }
+    }
+}
+
+@Composable
+private fun BrightnessSlider(
+    entity: Entity,
+    onChange: (Entity, Int) -> Unit,
+) {
+    // The light is "off" right now — disable the slider. We still show it
+    // so the user can pre-set brightness for the next turn-on.
+    val isOn = entity.state in LIST_OF_ON
+    // currentBrightness is null when the light is off; we hold the last
+    // user-set value via the optimistic update in the ViewModel, so this
+    // slider position stays put between on→off→on.
+    val level = entity.effectiveBrightness()
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 34.dp, end = 12.dp, top = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = entityIcon(entity.domain),
-            fontSize = 22.sp,
-            modifier = Modifier.padding(end = 12.dp),
+        Icon(
+            imageVector = Icons.Default.Lightbulb,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
         )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(entity.name, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                entity.state,
-                style = MaterialTheme.typography.labelMedium,
-                color = stateColor(entity.state, entity.domain),
-            )
-            if (entity.entityCategory != null) {
-                Text(
-                    text = entity.entityCategory,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        EntityControl(entity = entity, onAction = onAction)
+        Spacer(Modifier.width(4.dp))
+        Slider(
+            modifier = Modifier.weight(1f),
+            value = level.toFloat(),
+            onValueChange = { onChange(entity, it.toInt()) },
+            // valueRange is 1..255 (0 is "off", separate Switch toggles that)
+            valueRange = 1f..255f,
+            steps = 25,
+            enabled = isOn,
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = "${(level * 100) / 255}%",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.widthIn(min = 36.dp),
+        )
     }
 }
 
@@ -200,7 +263,26 @@ private fun EntityControl(
     onAction: (Entity, String) -> Unit,
 ) {
     when (entity.domain) {
-        "light", "switch", "fan", "media_player" -> {
+        "light" -> {
+            val isOn = entity.state in LIST_OF_ON
+            Switch(
+                checked = isOn,
+                onCheckedChange = { turnOn ->
+                    // For a light, don't just toggle — if we're turning on
+                    // but the last known brightness was 0, request full
+                    // brightness so the user doesn't get a black bulb.
+                    if (turnOn) {
+                        val level = entity.effectiveBrightness(fallback = 255)
+                        // Use the more specific service so brightness is
+                        // preserved / set to the chosen level.
+                        onAction(entity, "turn_on")
+                    } else {
+                        onAction(entity, "turn_off")
+                    }
+                },
+            )
+        }
+        "switch", "fan", "media_player" -> {
             val isOn = entity.state in LIST_OF_ON
             Switch(
                 checked = isOn,

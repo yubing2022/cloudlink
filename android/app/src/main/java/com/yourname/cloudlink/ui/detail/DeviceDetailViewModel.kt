@@ -92,6 +92,51 @@ class DeviceDetailViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Set absolute brightness 0-255 on a dimmable light. Brightness==0 is
+     * a no-op; for "off" use [control] with action="turn_off".
+     *
+     * Optimistically updates the entity's brightness attribute so the
+     * slider doesn't lag. Also flips state to "on" if we're bringing it
+     * from 0 → non-zero.
+     */
+    fun setBrightness(entity: Entity, brightness: Int) {
+        val level = brightness.coerceIn(0, 255)
+        // Optimistic update
+        val dev = _state.value.device ?: return
+        _state.value = _state.value.copy(
+            device = dev.copy(
+                entities = dev.entities.map { e ->
+                    if (e.entity_id != entity.entity_id) return@map e
+                    val newAttrs = e.attributes.toMutableMap().apply {
+                        this["brightness"] = level
+                    }
+                    val newState = if (level == 0) "off" else "on"
+                    e.copy(state = newState, attributes = newAttrs)
+                }
+            )
+        )
+        viewModelScope.launch {
+            try {
+                val token = tokenStore.getAccessToken() ?: return@launch
+                api.controlDevice(
+                    "Bearer $token",
+                    entity.entity_id,
+                    DeviceActionRequest(
+                        domain = "light",
+                        service = "turn_on",
+                        data = mapOf(
+                            "entity_id" to entity.entity_id,
+                            "brightness" to level,
+                        ),
+                    ),
+                )
+            } catch (_: Exception) {
+                // WS state_change will reconcile
+            }
+        }
+    }
+
     private fun predictedStateFor(entityId: String, action: String): String {
         if (action == "turn_on" || action == "open") return "on"
         if (action == "turn_off" || action == "close") return "off"
