@@ -61,6 +61,19 @@ fun AppNavGraph(
             HomeScreen(
                 onLogout = { /* nav effect handles it */ },
                 onSettings = { navController.navigate("settings") },
+                onDeviceClick = { device ->
+                    navController.navigate("device/${device.haDeviceId}")
+                },
+            )
+        }
+        composable(
+            route = "device/{haDeviceId}",
+            arguments = listOf(androidx.navigation.navArgument("haDeviceId") {
+                type = androidx.navigation.NavType.StringType
+            }),
+        ) {
+            com.yourname.cloudlink.ui.detail.DeviceDetailScreen(
+                onBack = { navController.popBackStack() },
             )
         }
         composable("settings") {

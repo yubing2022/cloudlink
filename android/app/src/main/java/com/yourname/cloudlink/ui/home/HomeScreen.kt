@@ -1,27 +1,23 @@
 package com.yourname.cloudlink.ui.home
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.yourname.cloudlink.data.model.Entity
 import com.yourname.cloudlink.data.model.HomeDevice
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -29,6 +25,7 @@ import com.yourname.cloudlink.data.model.HomeDevice
 fun HomeScreen(
     onLogout: () -> Unit,
     onSettings: () -> Unit = {},
+    onDeviceClick: (HomeDevice) -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -52,7 +49,7 @@ fun HomeScreen(
                     // spinning indicator so the user gets clear visual
                     // feedback that something happened.
                     if (state.isRefreshing) {
-                        androidx.compose.foundation.layout.Box(
+                        Box(
                             modifier = Modifier.size(40.dp),
                             contentAlignment = Alignment.Center,
                         ) {
@@ -105,8 +102,7 @@ fun HomeScreen(
                 else ->
                     DeviceList(
                         devices = state.visibleDevices,
-                        onEntityAction = viewModel::control,
-                        onDeviceToggle = viewModel::togglePrimary,
+                        onDeviceClick = onDeviceClick,
                     )
             }
         }
@@ -116,15 +112,14 @@ fun HomeScreen(
 @Composable
 private fun DeviceList(
     devices: List<HomeDevice>,
-    onEntityAction: (Entity, String) -> Unit,
-    onDeviceToggle: (HomeDevice) -> Unit,
+    onDeviceClick: (HomeDevice) -> Unit,
 ) {
     val byArea = remember(devices) {
         devices.groupBy { it.area ?: "未分组" }
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(8.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
     ) {
         byArea.forEach { (area, devs) ->
             item(key = "area_$area") {
@@ -132,15 +127,11 @@ private fun DeviceList(
                     text = "📍 $area",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
                 )
             }
             items(devs.filter { it.entities.isNotEmpty() }, key = { it.haDeviceId }) { device ->
-                DeviceCard(
-                    device = device,
-                    onEntityAction = onEntityAction,
-                    onTogglePrimary = { onDeviceToggle(device) },
-                )
+                DeviceCard(device = device, onClick = { onDeviceClick(device) })
             }
         }
     }
@@ -149,157 +140,64 @@ private fun DeviceList(
 @Composable
 private fun DeviceCard(
     device: HomeDevice,
-    onEntityAction: (Entity, String) -> Unit,
-    onTogglePrimary: () -> Unit,
+    onClick: () -> Unit,
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp, horizontal = 8.dp),
+            .padding(vertical = 4.dp)
+            .clickable { onClick() },
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            // Header: device name + area + quick action
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.Home,
-                    contentDescription = null,
-                    modifier = Modifier.padding(end = 8.dp),
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.Home,
+                contentDescription = null,
+                modifier = Modifier.size(28.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = device.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
                 )
-                Column(modifier = Modifier.weight(1f)) {
+                val subtitle = listOfNotNull(device.area, device.manufacturer, device.model)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" • ")
+                if (subtitle.isNotEmpty()) {
                     Text(
-                        text = device.name,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    val subtitle = listOfNotNull(device.manufacturer, device.model, device.area)
-                        .joinToString(" • ")
-                    if (subtitle.isNotEmpty()) {
-                        Text(
-                            text = subtitle,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
-                // Quick toggle: only show if there's a togglable primary entity
-                device.primaryEntity?.let { primary ->
-                    if (primary.domain in listOf("light", "switch", "fan", "media_player")) {
-                        Switch(
-                            checked = primary.state in listOf("on", "playing", "home", "open"),
-                            onCheckedChange = { onTogglePrimary() },
-                        )
-                    }
+                val onlineCount = device.entities.count { e ->
+                    e.state in listOf("on", "playing", "home", "open", "active")
                 }
-            }
-            // Entities: all entities of this device as sub-controls
-            if (device.entities.size > 1) {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    device.entities.forEach { entity ->
-                        EntityRow(
-                            entity = entity,
-                            onAction = onEntityAction,
-                        )
-                    }
+                val subtitleLine2 = if (device.entities.size > 1) {
+                    "${device.entities.size} 个 entity"
+                } else if (device.entities.size == 1) {
+                    "1 个 entity"
+                } else {
+                    ""
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun EntityRow(
-    entity: Entity,
-    onAction: (Entity, String) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = entityIcon(entity.domain),
-            fontSize = 18.sp,
-            modifier = Modifier.padding(end = 8.dp),
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(entity.name, style = MaterialTheme.typography.bodyMedium)
-                if (entity.entityCategory != null) {
-                    Spacer(Modifier.width(4.dp))
-                    AssistChip(
-                        onClick = {},
-                        label = {
-                            Text(
-                                entity.entityCategory,
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        },
-                        modifier = Modifier.height(20.dp),
+                if (subtitleLine2.isNotEmpty()) {
+                    Text(
+                        text = subtitleLine2,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            Text(
-                entity.state,
-                style = MaterialTheme.typography.labelSmall,
-                color = stateColor(entity.state, entity.domain),
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = "详情",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        EntityActionButton(entity, onAction)
     }
-}
-
-@Composable
-private fun EntityActionButton(
-    entity: Entity,
-    onAction: (Entity, String) -> Unit,
-) {
-    when (entity.domain) {
-        "light", "switch", "fan", "media_player" -> {
-            val isOn = entity.state in listOf("on", "playing", "home", "open")
-            Switch(
-                checked = isOn,
-                onCheckedChange = { onAction(entity, "toggle") },
-            )
-        }
-        "button" -> {
-            FilledTonalButton(
-                onClick = { onAction(entity, "press") },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-            ) {
-                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("按", style = MaterialTheme.typography.labelMedium)
-            }
-        }
-        "sensor", "binary_sensor" -> {
-            // Read-only, no action
-        }
-        else -> {
-            // Try generic toggle
-            TextButton(onClick = { onAction(entity, "toggle") }) {
-                Text(entity.domain)
-            }
-        }
-    }
-}
-
-private fun entityIcon(domain: String) = when (domain) {
-    "light" -> "💡"
-    "switch" -> "🔌"
-    "fan" -> "🌀"
-    "media_player" -> "🎵"
-    "sensor" -> "📊"
-    "binary_sensor" -> "🔘"
-    "button" -> "🔲"
-    "climate" -> "🌡️"
-    "cover" -> "🪟"
-    "lock" -> "🔒"
-    "camera" -> "📷"
-    else -> "⚙️"
-}
-
-private fun stateColor(state: String, domain: String): Color = when {
-    state in listOf("on", "playing", "home", "open", "unlocked", "active") -> Color(0xFF2E7D32)
-    state in listOf("off", "idle", "closed", "locked", "inactive") -> Color(0xFF616161)
-    else -> Color(0xFFE65100)
 }
