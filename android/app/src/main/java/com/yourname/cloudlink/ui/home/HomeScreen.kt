@@ -9,15 +9,23 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.AcUnit
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.DeviceHub
+import androidx.compose.material.icons.filled.DeviceThermostat
 import androidx.compose.material.icons.filled.ExitToApp
-import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Router
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material.icons.filled.ToggleOn
+import androidx.compose.material.icons.filled.WifiOff
+import androidx.compose.material.icons.filled.WindPower
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -154,9 +162,12 @@ private fun DeviceCard(
     val status = primary?.let { statusLabel(it) } ?: "离线"
     val location = device.area?.takeIf { it.isNotBlank() } ?: "未分组"
 
+    // fillMaxHeight() makes every card in the grid row match the tallest
+    // sibling, so two-line device names don't produce uneven layouts.
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .fillMaxHeight()
             .clickable { onClick() },
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
@@ -164,13 +175,17 @@ private fun DeviceCard(
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+        ) {
             // Title + status/area line (华为样式: 设备名 + "状态 | 位置")
             Text(
                 text = device.name,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(4.dp))
@@ -193,15 +208,17 @@ private fun DeviceCard(
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
             }
-            // Big device icon, centered
+            // Spacer pushes the icon down to centre the visual weight in the
+            // card regardless of whether the title area is taller.
+            Spacer(Modifier.weight(1f))
+            // Big device icon, centred
             Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth(),
                 contentAlignment = Alignment.Center,
             ) {
                 DeviceIconLarge(device = device)
             }
+            Spacer(Modifier.weight(1f))
             // Bottom row: action button aligned to the end
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -249,12 +266,14 @@ private fun QuickActionButton(
     if (primary == null) return
     val isOn = primary.state in ON_STATES
     val icon = when (primary.domain) {
-        "light", "switch", "fan" -> Icons.Filled.Check
-        "media_player" -> Icons.Filled.PlayArrow
+        "light" -> Icons.Filled.Lightbulb
+        "switch" -> Icons.Filled.ToggleOn
+        "fan" -> Icons.Filled.WindPower
+        "media_player" -> Icons.Filled.PowerSettingsNew
         "button" -> Icons.Filled.PlayArrow
-        "cover" -> Icons.Filled.Settings
-        "lock" -> Icons.Filled.Settings
-        else -> Icons.Filled.Settings
+        "cover" -> Icons.Filled.Bolt
+        "lock" -> Icons.Filled.Lock
+        else -> Icons.Filled.Bolt
     }
     val tint = if (isOn) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.onSurfaceVariant
@@ -280,19 +299,32 @@ private fun QuickActionButton(
 
 private fun iconFor(device: HomeDevice, primary: Entity?): ImageVector {
     val domain = primary?.domain ?: ""
+    // Sensor domains don't tell us what is being measured, so the device
+    // name is the best hint. Common Chinese patterns covered below.
+    val name = device.name
     return when (domain) {
-        "light" -> Icons.Filled.Star
-        "switch" -> Icons.Filled.Check
-        "fan" -> Icons.Filled.Settings
-        "media_player" -> Icons.Filled.Notifications
+        "light" -> Icons.Filled.Lightbulb
+        "switch" -> Icons.Filled.ToggleOn
+        "fan" -> Icons.Filled.WindPower
+        "media_player" -> Icons.Filled.Speaker
         "button" -> Icons.Filled.PlayArrow
-        "cover" -> Icons.Filled.Settings
-        "lock" -> Icons.Filled.Settings
-        "sensor" -> if (device.name.contains("温", ignoreCase = true)) Icons.Filled.Settings
-                     else Icons.Filled.Settings
-        "binary_sensor" -> Icons.Filled.Settings
-        "climate" -> Icons.Filled.Settings
-        else -> Icons.Filled.Close
+        "cover" -> if (name.contains("窗", ignoreCase = true)) Icons.Filled.WifiOff
+                    else Icons.Filled.Bolt
+        "lock" -> Icons.Filled.Lock
+        "climate" -> Icons.Filled.DeviceThermostat
+        "sensor" -> when {
+            name.contains("温", ignoreCase = true) -> Icons.Filled.DeviceThermostat
+            name.contains("湿", ignoreCase = true) -> Icons.Filled.AcUnit
+            name.contains("电", ignoreCase = true) || name.contains("功率", ignoreCase = true) -> Icons.Filled.Bolt
+            name.contains("打印", ignoreCase = true) -> Icons.Filled.DeviceHub
+            name.contains("备份", ignoreCase = true) -> Icons.Filled.Router
+            else -> Icons.Filled.Sensors
+        }
+        "binary_sensor" -> Icons.Filled.Sensors
+        "humidifier" -> Icons.Filled.AcUnit
+        "vacuum" -> Icons.Filled.WindPower
+        "water_heater" -> Icons.Filled.DeviceThermostat
+        else -> Icons.Filled.DeviceHub
     }
 }
 
