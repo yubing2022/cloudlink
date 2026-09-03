@@ -239,26 +239,21 @@ private fun DeviceCard(
 @Composable
 private fun DeviceIconLarge(device: HomeDevice) {
     val primary = device.primaryEntity
-    val onState = primary?.state in ON_STATES
-    val bg = if (onState) MaterialTheme.colorScheme.primaryContainer
-    else MaterialTheme.colorScheme.surfaceVariant
+    // No background — the icon sits directly on the card surface.
+    // The "on" vs "off" distinction is conveyed by the bottom-right
+    // action button (filled circle in primaryContainer when on) plus
+    // the icon's own color from the miot-spec.com source image.
     Box(
-        modifier = Modifier
-            .size(64.dp)
-            .clip(CircleShape)
-            .background(bg),
+        modifier = Modifier.size(64.dp),
         contentAlignment = Alignment.Center,
     ) {
-        // Try miot-spec.com icon first; fall back to per-domain Material icon
-        // (iconFor() picks a sensible default based on primary entity domain).
         val url = device.model  // model e.g. "yeelink.light.mbulb3"
         if (url.isNullOrBlank()) {
             Icon(
                 imageVector = iconFor(device, primary),
                 contentDescription = null,
-                modifier = Modifier.size(36.dp),
-                tint = if (onState) MaterialTheme.colorScheme.onPrimaryContainer
-                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(40.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
             DeviceIconImage(
