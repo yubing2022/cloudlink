@@ -132,25 +132,51 @@ class CloudClient:
         async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as ws:
             self.ws = ws
             self._backoff = INITIAL_BACKOFF_SECONDS
-            
-            _LOGGER.warning("CloudLink: WS connected, sending initial device_sync")
-            
-            # Try immediate sync (entities may or may not be ready)
-            await self._send_full_sync()
-            
-            # ALSO listen for homeassistant_started to sync again
-            # (handles the case where HA wasn't ready at connect time)
-            async def _on_started(event):
-                _LOGGER.warning("CloudLink: homeassistant_started fired, re-syncing")
-                await self._send_full_sync()
-            self._unsub_started = self.hass.bus.async_listen_once(
-                "homeassistant_started", _on_started,
-            )
-            
-            # Subscribe to state changes
+
+            # Subscribe to state changes BEFORE any sync so we don't miss
+            # the first post-connect state events.
             self._unsub_state = self.hass.bus.async_listen(
                 "state_changed", self._on_state_changed
             )
+
+            # Decide whether to sync now or wait for homeassistant_started.
+            #
+            # Previous behavior: always sync immediately on connect, then
+            # also re-sync on homeassistant_started. This caused a window
+            # where the cloud received a partial payload (HA had only
+            # loaded ~1 entity at connect time), and the cloud's
+            # "treat sync as full snapshot" semantics wiped 13/14 of the
+            # user's devices before the second sync restored them ~10s
+            # later. End users would see their device list briefly
+            # collapse to almost nothing.
+            #
+            # New behavior: if HA has already finished startup (the
+            # common case on integration reload), sync immediately with
+            # the full state. If HA is still starting up, register a
+            # one-shot listener and wait — once homeassistant_started
+            # fires, all entities are loaded and the sync will be
+            # complete.
+            if getattr(self.hass, "is_running", False):
+                _LOGGER.warning(
+                    "CloudLink: WS connected, HA already running, "
+                    "sending initial device_sync"
+                )
+                await self._send_full_sync()
+            else:
+                _LOGGER.warning(
+                    "CloudLink: WS connected, waiting for homeassistant_started "
+                    "before first sync (HA still booting)"
+                )
+
+                async def _on_started(event):
+                    _LOGGER.warning(
+                        "CloudLink: homeassistant_started fired, "
+                        "sending initial device_sync"
+                    )
+                    await self._send_full_sync()
+                self._unsub_started = self.hass.bus.async_listen_once(
+                    "homeassistant_started", _on_started,
+                )
             
             _LOGGER.warning("CloudLink: subscribed to state_changed, entering message loop")
             

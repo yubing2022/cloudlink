@@ -307,6 +307,82 @@ async def test_excluded_entity_not_forwarded_for_attribute_change():
     print("  ✓ excluded_entity_not_forwarded_for_attribute_change")
 
 
+async def test_initial_sync_immediate_when_hass_running():
+    """When HA has already finished startup, _send_full_sync runs on connect."""
+    import websockets
+    hass = make_hass()
+    hass.is_running = True  # HA already started
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client._send_full_sync = AsyncMock()  # Don't actually scan states
+
+    # Build a fake websockets.connect() context manager
+    class FakeWS:
+        async def send(self, _): pass
+        async def close(self): pass
+        def __aiter__(self): return self
+        async def __anext__(self):
+            raise StopAsyncIteration  # exit the message loop immediately
+    fake_ws = FakeWS()
+
+    class FakeConnect:
+        def __aiter__(self): return self
+        async def __anext__(self): raise StopAsyncIteration
+        async def __aenter__(self): return fake_ws
+        async def __aexit__(self, *args): return False
+
+    def fake_connect(*args, **kwargs):
+        return FakeConnect()
+
+    with patch.object(websockets, "connect", fake_connect):
+        try:
+            await asyncio.wait_for(client._connect_and_serve(), timeout=2)
+        except (asyncio.TimeoutError, StopAsyncIteration):
+            pass
+
+    client._send_full_sync.assert_awaited_once()
+    print("  ✓ initial_sync_immediate_when_hass_running")
+
+
+async def test_initial_sync_deferred_until_homeassistant_started():
+    """When HA is still booting, no sync until homeassistant_started fires."""
+    import websockets
+    hass = make_hass()
+    hass.is_running = False  # HA still starting
+    started_listeners = []
+    hass.bus.async_listen_once = MagicMock(
+        side_effect=lambda evt, cb: started_listeners.append((evt, cb)) or (lambda: None)
+    )
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client._send_full_sync = AsyncMock()
+
+    class FakeWS:
+        async def send(self, _): pass
+        async def close(self): pass
+        def __aiter__(self): return self
+        async def __anext__(self):
+            raise StopAsyncIteration
+    fake_ws = FakeWS()
+
+    class FakeConnect:
+        async def __aenter__(self): return fake_ws
+        async def __aexit__(self, *args): return False
+
+    def fake_connect(*args, **kwargs):
+        return FakeConnect()
+
+    with patch.object(websockets, "connect", fake_connect):
+        try:
+            await asyncio.wait_for(client._connect_and_serve(), timeout=2)
+        except (asyncio.TimeoutError, StopAsyncIteration):
+            pass
+
+    # Sync must NOT have been called yet
+    client._send_full_sync.assert_not_called()
+    # And a one-shot listener for homeassistant_started must be registered
+    assert any(evt == "homeassistant_started" for evt, _ in started_listeners),         f"expected homeassistant_started listener, got {started_listeners}"
+    print("  ✓ initial_sync_deferred_until_homeassistant_started")
+
+
 def run_sync_tests():
     test_url_conversion()
     test_url_normalization()
@@ -321,6 +397,8 @@ async def run_async_tests():
     await test_identical_state_and_attributes_suppressed()
     await test_state_change_off_to_on_forwarded()
     await test_excluded_entity_not_forwarded_for_attribute_change()
+    await test_initial_sync_immediate_when_hass_running()
+    await test_initial_sync_deferred_until_homeassistant_started()
 
 
 if __name__ == "__main__":
