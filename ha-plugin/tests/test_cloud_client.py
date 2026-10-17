@@ -383,6 +383,52 @@ async def test_initial_sync_deferred_until_homeassistant_started():
     print("  ✓ initial_sync_deferred_until_homeassistant_started")
 
 
+async def test_dumps_handles_datetime_in_attributes():
+    """_dumps must serialise datetime in state.attributes (last_updated,
+    last_changed) without raising — otherwise the WS dies in a reconnect
+    loop and action messages never reach the plugin.
+    """
+    from datetime import datetime, timezone
+    from cloudlink.cloud_client import _dumps
+
+    hass = make_hass()
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client._entity_allowed = lambda _eid: True
+
+    old = MockState(
+        "light.x", "on", "X", "light",
+        attrs={"brightness": 87},
+    )
+    new = MockState(
+        "light.x", "on", "X", "light",
+        attrs={
+            "brightness": 40,
+            # The two datetime fields HA always attaches to State:
+            "last_updated": datetime(2026, 10, 18, 10, 0, 0, tzinfo=timezone.utc),
+            "last_changed": datetime(2026, 10, 18, 10, 0, 0, tzinfo=timezone.utc),
+            # And integration-specific ones that some plugins stuff in:
+            "last_seen": datetime(2026, 10, 18, 9, 59, 30, tzinfo=timezone.utc),
+        },
+    )
+    event = MagicMock()
+    event.data = {"new_state": new, "old_state": old}
+
+    client.ws = AsyncMock()
+    # This used to raise TypeError: Object of type datetime is not JSON
+    # serializable. After the fix it should send cleanly.
+    await client._on_state_changed(event)
+
+    client.ws.send.assert_called_once()
+    payload = json.loads(client.ws.send.call_args[0][0])
+    # The datetime must have been stringified, not left as a datetime
+    assert payload["attributes"]["last_updated"] == "2026-10-18T10:00:00+00:00"
+    assert payload["attributes"]["last_changed"] == "2026-10-18T10:00:00+00:00"
+    assert payload["attributes"]["last_seen"] == "2026-10-18T09:59:30+00:00"
+    # And the brightness update still goes through
+    assert payload["attributes"]["brightness"] == 40
+    print("  ✓ dumps_handles_datetime_in_attributes")
+
+
 def run_sync_tests():
     test_url_conversion()
     test_url_normalization()
@@ -399,6 +445,7 @@ async def run_async_tests():
     await test_excluded_entity_not_forwarded_for_attribute_change()
     await test_initial_sync_immediate_when_hass_running()
     await test_initial_sync_deferred_until_homeassistant_started()
+    await test_dumps_handles_datetime_in_attributes()
 
 
 if __name__ == "__main__":

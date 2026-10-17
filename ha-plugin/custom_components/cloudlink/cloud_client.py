@@ -2,6 +2,26 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, date
+
+# HA State.attributes can contain datetime objects (last_updated,
+# last_changed, and various integration-specific timestamps). The
+# default json.dumps raises "Object of type datetime is not JSON
+# serializable" and the WS dies — and worse, dies silently in a
+# reconnect loop so action messages never reach the plugin.
+class _CloudLinkJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            # ISO-8601 with timezone so the backend can store it directly
+            return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        return super().default(obj)
+
+
+def _dumps(obj) -> str:
+    """Wrapper that always uses the datetime-aware encoder."""
+    return json.dumps(obj, cls=_CloudLinkJSONEncoder)
 
 import websockets
 from homeassistant.core import Event, HomeAssistant
@@ -303,7 +323,7 @@ class CloudClient:
             _LOGGER.warning("CloudLink: NO entities after filter (would delete all on cloud), skipping")
             return
 
-        msg = json.dumps({
+        msg = _dumps({
             "type": "device_sync",
             "devices": devices_dict,
             "entities": entities,
@@ -353,7 +373,7 @@ class CloudClient:
         except Exception:
             pass
         try:
-            payload = json.dumps({
+            payload = _dumps({
                 "type": "state_change",
                 "entity_id": new.entity_id,
                 "state": new.state,
@@ -369,7 +389,7 @@ class CloudClient:
     async def _handle_message(self, msg: dict) -> None:
         msg_type = msg.get("type")
         if msg_type == "ping":
-            await self.ws.send(json.dumps({"type": "pong"}))
+            await self.ws.send(_dumps({"type": "pong"}))
         elif msg_type == "device_action":
             await self._execute_action(msg)
         else:
