@@ -6,6 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError
+from sqlalchemy.orm import selectinload
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -132,10 +133,34 @@ async def _handle_device_sync(instance_id: int, raw_msg: dict) -> int:
                 await db.delete(e)
                 deleted += 1
 
+        # 4. Delete devices not in incoming payload. The HA plugin now
+        # filters out integration/add-on shells upstream (so this is a
+        # belt-and-suspenders); on the WS path it also clears any
+        # renamed/removed device ghosts.
+        #
+        # Safety valve: if the payload has no devices at all (e.g. the
+        # filter ate everything on a buggy first sync), don't wipe.
+        # MUST preload entities — see commit ff5272e for the
+        # MissingGreenlet history (cascade='all, delete-orphan').
+        devices_deleted = 0
+        incoming_device_ids = set(devices_dict.keys())
+        if incoming_device_ids:
+            stale = await db.execute(
+                select(HADevice)
+                .where(
+                    HADevice.ha_instance_id == instance_id,
+                    HADevice.ha_device_id.notin_(incoming_device_ids),
+                )
+                .options(selectinload(HADevice.entities))
+            )
+            for d in stale.scalars().all():
+                await db.delete(d)
+                devices_deleted += 1
+
         await db.commit()
         logger.info(
-            "device_sync for instance %d: devices +%d ~%d, entities +%d ~%d -%d (incoming: %d)",
-            instance_id, devs_added, devs_updated,
+            "device_sync for instance %d: devices +%d ~%d -%d, entities +%d ~%d -%d (incoming: %d)",
+            instance_id, devs_added, devs_updated, devices_deleted,
             ents_added, ents_updated, deleted, len(entities_list),
         )
         return ents_added + ents_updated
