@@ -29,6 +29,18 @@ exceptions_module = types.ModuleType("homeassistant.exceptions")
 exceptions_module.ConfigEntryNotReady = Exception
 sys.modules["homeassistant.exceptions"] = exceptions_module
 
+# cloud_client also imports from homeassistant.helpers.{device,area,entity}_registry
+helpers_module = types.ModuleType("homeassistant.helpers")
+for sub in ("device_registry", "area_registry", "entity_registry"):
+    m = types.ModuleType(f"homeassistant.helpers.{sub}")
+    # All three expose async_get() returning a registry object with async_get(...)
+    reg_mock = MagicMock()
+    reg_mock.async_get = MagicMock(return_value=None)  # entity not in registry
+    m.async_get = MagicMock(return_value=reg_mock)
+    sys.modules[f"homeassistant.helpers.{sub}"] = m
+    setattr(helpers_module, sub, m)
+sys.modules["homeassistant.helpers"] = helpers_module
+
 # Set up cloudlink as a package, then load submodules
 import importlib.util, types
 pkg_path = str(Path(__file__).parent.parent / "custom_components" / "cloudlink")
@@ -193,6 +205,108 @@ async def test_incomplete_action_ignored():
     print("  ✓ incomplete_action_ignored")
 
 
+async def test_attribute_only_change_forwarded():
+    """Brightness-only update must be forwarded to cloud.
+
+    Reproduces the production bug: setting light brightness leaves
+    `state == "on"` unchanged but mutates `attributes`. Previous code
+    dropped the event; this test pins the fix.
+    """
+    hass = make_hass()
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client.ws = AsyncMock()
+    # Bypass _entity_allowed so the test focuses on the change-detection logic
+    client._entity_allowed = lambda _eid: True
+
+    old = MockState(
+        "light.yeelink_cn_1208334138_mbulb3_s_2",
+        "on", "落地灯", "light",
+        attrs={"brightness": 87, "color_mode": "color_temp"},
+    )
+    new = MockState(
+        "light.yeelink_cn_1208334138_mbulb3_s_2",
+        "on", "落地灯", "light",
+        attrs={"brightness": 40, "color_mode": "color_temp"},
+    )
+    event = MagicMock()
+    event.data = {"new_state": new, "old_state": old}
+
+    await client._on_state_changed(event)
+
+    client.ws.send.assert_called_once()
+    payload = json.loads(client.ws.send.call_args[0][0])
+    assert payload["type"] == "state_change"
+    assert payload["entity_id"] == "light.yeelink_cn_1208334138_mbulb3_s_2"
+    assert payload["state"] == "on"
+    assert payload["attributes"]["brightness"] == 40
+    assert payload["attributes"]["color_mode"] == "color_temp"
+    print("  ✓ attribute_only_change_forwarded")
+
+
+async def test_identical_state_and_attributes_suppressed():
+    """Identical snapshots → no ws.send (regression guard)."""
+    hass = make_hass()
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client.ws = AsyncMock()
+    client._entity_allowed = lambda _eid: True
+
+    snap = MockState(
+        "light.x", "on", "X", "light",
+        attrs={"brightness": 100},
+    )
+    event = MagicMock()
+    event.data = {"new_state": snap, "old_state": snap}
+
+    await client._on_state_changed(event)
+
+    client.ws.send.assert_not_called()
+    print("  ✓ identical_state_and_attributes_suppressed")
+
+
+async def test_state_change_off_to_on_forwarded():
+    """Regression: off→on (state string changes) is still forwarded."""
+    hass = make_hass()
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client.ws = AsyncMock()
+    client._entity_allowed = lambda _eid: True
+
+    old = MockState("light.x", "off", "X", "light", attrs={})
+    new = MockState("light.x", "on",  "X", "light", attrs={})
+    event = MagicMock()
+    event.data = {"new_state": new, "old_state": old}
+
+    await client._on_state_changed(event)
+
+    client.ws.send.assert_called_once()
+    payload = json.loads(client.ws.send.call_args[0][0])
+    assert payload["type"] == "state_change"
+    assert payload["state"] == "on"
+    print("  ✓ state_change_off_to_on_forwarded")
+
+
+async def test_excluded_entity_not_forwarded_for_attribute_change():
+    """_entity_allowed() still filters attribute-only events.
+
+    Pin: the new equality check must NOT short-circuit before the
+    filter; otherwise a brightness update on a filtered entity would
+    bypass the include/exclude list.
+    """
+    hass = make_hass()
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client.ws = AsyncMock()
+    client._entity_allowed = lambda _eid: False  # filter rejects
+
+    old = MockState("light.x", "on", "X", "light", attrs={"brightness": 87})
+    new = MockState("light.x", "on", "X", "light", attrs={"brightness": 40})
+    event = MagicMock()
+    event.data = {"new_state": new, "old_state": old}
+
+    await client._on_state_changed(event)
+
+    client.ws.send.assert_not_called()
+    print("  ✓ excluded_entity_not_forwarded_for_attribute_change")
+
+
 def run_sync_tests():
     test_url_conversion()
     test_url_normalization()
@@ -203,6 +317,10 @@ async def run_async_tests():
     await test_action_execution()
     await test_ping_pong()
     await test_incomplete_action_ignored()
+    await test_attribute_only_change_forwarded()
+    await test_identical_state_and_attributes_suppressed()
+    await test_state_change_off_to_on_forwarded()
+    await test_excluded_entity_not_forwarded_for_attribute_change()
 
 
 if __name__ == "__main__":

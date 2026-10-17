@@ -271,10 +271,25 @@ class CloudClient:
 
 
     async def _on_state_changed(self, event: Event) -> None:
-        """Forward HA state changes to cloud."""
+        """Forward HA state changes to cloud.
+
+        Only drop the event if BOTH the state string AND the attributes
+        dict are byte-identical to the previous snapshot. A pure
+        attribute change (e.g. light brightness/color/temp, climate
+        set_temperature) leaves `state` unchanged but mutates
+        `attributes`; the previous code dropped those events, so the
+        cloud would never see brightness-only updates until the next
+        full device_sync.
+        """
         new = event.data.get("new_state")
         old = event.data.get("old_state")
-        if not new or (old and old.state == new.state):
+        if not new:
+            return
+        if (
+            old is not None
+            and old.state == new.state
+            and dict(old.attributes) == dict(new.attributes)
+        ):
             return
         if not self.ws:
             return
