@@ -31,6 +31,14 @@ INTERNAL_DOMAINS = frozenset({
     "notify",
     # Image processing (legacy)
     "image_processing",
+    # Activatable items that are user-defined actions, not physical
+    # devices. They have no controllable state in the device-list
+    # sense (just a "last triggered" timestamp), and triggering them
+    # from a phone app is almost never what the user wants — if it
+    # is, they can do it from HA's own UI. Cases seen in the wild
+    # (e.g. WorkBuddy registering "automation.workbuddy_*" entries
+    # for push notifications) just pollute the device list.
+    "automation", "script",
 })
 
 # Domains that the user MAY pick as filter targets. These are the only
@@ -44,8 +52,9 @@ USEFUL_DOMAINS = frozenset({
     "button", "climate", "cover", "fan", "humidifier",
     "light", "lock", "media_player", "number", "select",
     "switch", "text", "vacuum", "valve", "water_heater",
-    # Activatable items
-    "automation", "scene", "script",
+    # Activatable items (script + automation moved to INTERNAL_DOMAINS
+    # because they're user-defined actions, not physical devices)
+    "scene",
     # Input helpers (commonly used to drive dashboards / automations)
     "input_boolean", "input_number", "input_select", "input_text",
 })

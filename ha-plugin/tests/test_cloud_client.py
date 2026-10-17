@@ -429,6 +429,38 @@ async def test_dumps_handles_datetime_in_attributes():
     print("  ✓ dumps_handles_datetime_in_attributes")
 
 
+async def test_automation_and_script_domains_always_filtered():
+    """automation.* and script.* are user-defined actions, not devices.
+
+    They live in INTERNAL_DOMAINS so _domain_allowed() returns False
+    regardless of what the user picked in options (mode, domains,
+    patterns). Otherwise integrations like WorkBuddy pollute the
+    device list with notification-trigger automations.
+    """
+    from cloudlink.cloud_client import INTERNAL_DOMAINS
+    from cloudlink.const import USEFUL_DOMAINS
+    assert "automation" in INTERNAL_DOMAINS, (
+        "automation should be in INTERNAL_DOMAINS so it never appears "
+        "in the device list and can't be triggered from the app"
+    )
+    assert "script" in INTERNAL_DOMAINS, (
+        "script should be in INTERNAL_DOMAINS for the same reason"
+    )
+    # And NOT in the user-facing USEFUL_DOMAINS, so the options-flow
+    # dropdown doesn't offer them as a choice.
+    assert "automation" not in USEFUL_DOMAINS
+    assert "script" not in USEFUL_DOMAINS
+
+    hass = make_hass()
+    client = CloudClient(hass, "http://example.com", "test_token")
+    # Even with NO exclude patterns, automation + script are blocked.
+    assert client._domain_allowed("automation") is False
+    assert client._domain_allowed("script") is False
+    # Sanity: light is still allowed
+    assert client._domain_allowed("light") is True
+    print("  ✓ automation_and_script_domains_always_filtered")
+
+
 def run_sync_tests():
     test_url_conversion()
     test_url_normalization()
@@ -446,6 +478,7 @@ async def run_async_tests():
     await test_initial_sync_immediate_when_hass_running()
     await test_initial_sync_deferred_until_homeassistant_started()
     await test_dumps_handles_datetime_in_attributes()
+    await test_automation_and_script_domains_always_filtered()
 
 
 if __name__ == "__main__":
