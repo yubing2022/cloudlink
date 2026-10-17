@@ -104,7 +104,15 @@ async def get_device(
         select(DeviceEntity)
         .join(HAInstance, DeviceEntity.ha_instance_id == HAInstance.id)
         .where(HAInstance.user_id == user.id, DeviceEntity.entity_id == entity_id)
-        .options(selectinload(DeviceEntity.device))
+        # Preload DeviceEntity → its parent HADevice → its entities,
+        # because FastAPI serializes HADeviceSchema AFTER this handler
+        # returns. Without the second selectinload, accessing
+        # .entities on a "real" device triggers async lazy-load
+        # outside a greenlet and raises MissingGreenlet (HTTP 500).
+        .options(
+            selectinload(DeviceEntity.device)
+            .selectinload(HADevice.entities)
+        )
     )
     ent = (await db.execute(stmt)).scalar_one_or_none()
     if not ent:

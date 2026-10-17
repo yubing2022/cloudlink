@@ -161,6 +161,37 @@ async def test_get_device_parent_still_works(client, user_with_instance):
 
 
 @pytest.mark.asyncio
+async def test_get_device_real_device_ok(client, user_with_instance):
+    """Regression: real device (entity with ha_device_pk) must NOT 500.
+
+    Previous code did `selectinload(DeviceEntity.device)` only, so when
+    FastAPI serialized `HADeviceSchema.entities` after the handler
+    returned, async lazy-load raised MissingGreenlet → HTTP 500.
+    """
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    # light.living_room belongs to dev-001 (real device, not orphan).
+    resp = await client.get("/api/devices/light.living_room", headers=h)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Parent shape, with ALL sibling entities preloaded
+    assert "entities" in body
+    entity_ids = sorted(e["entity_id"] for e in body["entities"])
+    assert entity_ids == ["light.living_room", "sensor.living_room_temp"]
+    # And the original entity is in the returned set
+    assert any(e["entity_id"] == "light.living_room" for e in body["entities"])
+
+
+@pytest.mark.asyncio
 async def test_list_devices_unchanged(client, user_with_instance):
     """GET /api/devices still returns the same list shape."""
     await client.post("/api/auth/register", json={
