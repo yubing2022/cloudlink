@@ -11,7 +11,7 @@ from app.deps import get_current_user
 from app.models.device import HADevice, DeviceEntity
 from app.models.ha_instance import HAInstance
 from app.models.user import User
-from app.schemas.device import DeviceActionRequest, HADeviceSchema
+from app.schemas.device import DeviceActionRequest, DeviceStateSchema, HADeviceSchema
 from app.ws.manager import ws_manager
 
 router = APIRouter(prefix="/devices", tags=["devices"])
@@ -66,6 +66,31 @@ async def list_devices(
         )
         response.append(synthetic)
     return response
+
+
+@router.get("/{entity_id:path}/state", response_model=DeviceStateSchema)
+async def get_device_state(
+    entity_id: str,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Get a single entity's flat state (no parent device wrapping).
+
+    Declared before the `/{entity_id:path}` catch-all so the literal
+    suffix "/state" is matched by this route, not absorbed by get_device.
+    """
+    stmt = (
+        select(DeviceEntity)
+        .join(HAInstance, DeviceEntity.ha_instance_id == HAInstance.id)
+        .where(
+            HAInstance.user_id == user.id,
+            DeviceEntity.entity_id == entity_id,
+        )
+    )
+    ent = (await db.execute(stmt)).scalar_one_or_none()
+    if not ent:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Entity not found")
+    return ent
 
 
 @router.get("/{entity_id:path}", response_model=HADeviceSchema)

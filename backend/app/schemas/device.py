@@ -47,3 +47,13 @@ class DeviceActionRequest(BaseModel):
     domain: str
     service: str
     data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DeviceStateSchema(BaseModel):
+    """Flat single-entity state read (no parent device wrapping)."""
+    entity_id: str
+    state: str
+    attributes: Dict[str, Any] = Field(default_factory=dict)
+    last_state_change: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
