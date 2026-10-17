@@ -233,6 +233,21 @@ class CloudClient:
                 "entity_category": category,
             })
 
+        # 3. Devices: only keep devices that have at least one entity in
+        # `entities` (i.e. survived the filter). Without this, integration
+        # hubs and add-ons (which the HA device registry lists but have
+        # no controllable entities) leak into the device list as
+        # empty shells; once a real device loses its last entity to
+        # the config/diagnostic filter it also becomes a 0-entity row.
+        kept_device_ids = {
+            e["ha_device_id"] for e in entities if e["ha_device_id"]
+        }
+        devices_before = len(devices_dict)
+        devices_dict = {
+            did: d for did, d in devices_dict.items() if did in kept_device_ids
+        }
+        devices_dropped = devices_before - len(devices_dict)
+
         if FILTERED_CONFIG or FILTERED_DIAGNOSTIC:
             _LOGGER.warning(
                 "CloudLink: filtered %d config + %d diagnostic entities (stt/tts/update/repairs/...)",
@@ -247,6 +262,11 @@ class CloudClient:
             _LOGGER.warning(
                 "CloudLink: filtered %d entities by entity_id pattern (patterns=%s)",
                 FILTERED_PATTERN, self.exclude_entity_patterns,
+            )
+        if devices_dropped:
+            _LOGGER.warning(
+                "CloudLink: sync #%d - dropped %d devices with no entities (%d → %d devices)",
+                self._sync_count, devices_dropped, devices_before, len(devices_dict),
             )
         _LOGGER.warning(
             "CloudLink: sync #%d - %d devices, %d entities (after filter)",

@@ -5,11 +5,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.crypto import decrypt_ha_token, encrypt_ha_token
 from app.database import get_db
 from app.deps import get_current_user
-from app.models.device import DeviceEntity
+from app.models.device import DeviceEntity, HADevice
 from app.models.ha_instance import HAInstance
 from app.models.user import User
 from app.schemas.ha import (
@@ -231,18 +232,47 @@ async def sync_devices(
             await db.delete(e)
             deleted += 1
 
+    # Device cleanup: treat each sync as a full snapshot. Devices in
+    # the DB whose ha_device_id is not in this payload's devices_dict
+    # are removed (cascade="all, delete-orphan" on HADevice.entities
+    # will take their entities with them). Without this, integrated-
+    # hub / add-on ghosts and renamed devices leak into
+    # GET /api/devices forever.
+    #
+    # Safety valve: if the payload has no devices at all (e.g. filter
+    # ate everything), don't wipe — could be a buggy first sync.
+    devices_deleted = 0
+    incoming_device_ids = set(devices_dict.keys())
+    if incoming_device_ids:
+        stale = await db.execute(
+            select(HADevice)
+            .where(
+                HADevice.ha_instance_id == instance.id,
+                HADevice.ha_device_id.notin_(incoming_device_ids),
+            )
+            # MUST preload entities: db.delete() on HADevice triggers a
+            # cascade that needs the children collection. Async session
+            # would otherwise raise MissingGreenlet on the lazy load.
+            .options(selectinload(HADevice.entities))
+        )
+        for d in stale.scalars().all():
+            await db.delete(d)
+            devices_deleted += 1
+
     await db.commit()
 
     await ws_manager.broadcast_to_user(
         instance.user_id,
         {"type": "devices_synced",
          "devices": devs_added + devs_updated,
+         "devices_deleted": devices_deleted,
          "entities": ents_added + ents_updated},
     )
     return {
         "status": "ok",
         "devices_added": devs_added,
         "devices_updated": devs_updated,
+        "devices_deleted": devices_deleted,
         "entities_added": ents_added,
         "entities_updated": ents_updated,
         "entities_deleted": deleted,
