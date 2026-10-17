@@ -1,4 +1,5 @@
 """Devices endpoint - returns devices grouped by area and device."""
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -157,19 +158,57 @@ async def control_device(
             f"Domain mismatch: device is {device.domain}, request says {body.domain}",
         )
 
-    delivered = await ws_manager.send_to_ha(
-        instance.cloud_token,
-        {
-            "type": "device_action",
-            "entity_id": entity_id,
-            "domain": device.domain,
-            "service": body.service,
-            "data": body.data,
-        },
-    )
-    if not delivered:
+    # Send the action and block until the HA plugin reports the new
+    # state. The plugin runs the service call with blocking=True and
+    # then sends back a `device_action_result` carrying the
+    # post-action state, which is what we return.
+    #
+    # Without this, the response was {"status": "sent"} and clients
+    # polling /state immediately after the action would read the
+    # pre-action value (DB not yet updated by the plugin's
+    # state_change broadcast). Now the response IS the new state.
+    import uuid
+    request_id = uuid.uuid4().hex
+    try:
+        result = await ws_manager.request_action_and_wait(
+            instance.cloud_token,
+            {
+                "type": "device_action",
+                "request_id": request_id,
+                "entity_id": entity_id,
+                "domain": device.domain,
+                "service": body.service,
+                "data": body.data,
+            },
+            timeout=5.0,
+        )
+    except ConnectionError:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "HA instance is offline",
         )
-    return {"status": "sent", "entity_id": entity_id}
+    except asyncio.TimeoutError:
+        # Plugin didn't reply in 5s. The action may or may not have
+        # landed on the device; we just can't tell. Surface as 504 so
+        # clients can decide whether to retry.
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT,
+            "HA did not report action result in time",
+        )
+
+    if not result.get("ok", False):
+        # The plugin's service call itself failed. Pass the error
+        # through so the caller can show it.
+        err = result.get("error", "HA service call failed")
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"HA service call failed: {err}",
+        )
+
+    return {
+        "status": "ok",
+        "entity_id": entity_id,
+        "state": result.get("state"),
+        "attributes": result.get("attributes", {}),
+        "last_state_change": result.get("last_state_change"),
+    }

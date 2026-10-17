@@ -266,6 +266,21 @@ async def websocket_ha(websocket: WebSocket):
                     pass
             elif mtype == "state_change":
                 await _handle_state_change(instance_id, msg, user_id)
+            elif mtype == "device_action_result":
+                # Plugin's reply to a device_action sent by the cloud
+                # via ws_manager.request_action_and_wait(). The result
+                # dict (with the same request_id) resolves the Future
+                # that the corresponding /api/devices/{id}/action HTTP
+                # handler is awaiting.
+                rid = msg.get("request_id")
+                if rid and ws_manager._resolve_pending_action(rid, msg):
+                    logger.debug("WS HA: resolved action result %s", rid[:8])
+                else:
+                    logger.warning(
+                        "WS HA: no waiter for action result %s "
+                        "(late/duplicate?)",
+                        rid,
+                    )
             else:
                 logger.debug("WS HA: unknown msg type %s", mtype)
     except WebSocketDisconnect:

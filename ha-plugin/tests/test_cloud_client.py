@@ -71,10 +71,21 @@ class MockState:
 
 class MockStates:
     def __init__(self, states):
+        # key by entity_id for .get()
         self._states = states
+        self._by_id = {s.entity_id: s for s in states}
 
     def async_all(self):
         return self._states
+
+    def get(self, entity_id):
+        return self._by_id.get(entity_id)
+
+
+class _ServiceNotFound(Exception):
+    """Stub for homeassistant.exceptions.ServiceNotFound, used in
+    fallback-chain tests."""
+    pass
 
 
 def make_hass(states=None):
@@ -175,6 +186,141 @@ async def test_action_execution():
     assert call_args[0][2]["entity_id"] == "light.living_room"
     assert call_args[0][2]["brightness"] == 200
     print("  ✓ action_execution")
+
+
+async def test_action_result_sent_with_new_state():
+    """After a successful device_action, plugin must send a
+    device_action_result back to the cloud carrying the new state.
+    This is what lets POST /api/devices/{id}/action return the
+    post-action state instead of a stale DB row.
+    """
+    hass = make_hass()
+    # Seed a real State so hass.states.get returns a value
+    hass.states = MockStates([
+        MockState("light.living_room", "off", "Living Room", "light",
+                  attrs={"brightness": None}),
+    ])
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client.ws = AsyncMock()
+    hass.services.async_call = AsyncMock()  # succeeds
+
+    msg = {
+        "type": "device_action",
+        "request_id": "req-abc-123",
+        "domain": "light",
+        "service": "turn_off",
+        "entity_id": "light.living_room",
+        "data": {},
+    }
+    await client._handle_message(msg)
+
+    hass.services.async_call.assert_awaited_once()
+    # blocking=True now
+    assert hass.services.async_call.call_args.kwargs.get("blocking") is True
+    # Wait — kwargs is empty. Need to check positional.
+    # services.async_call(domain, service, data, blocking=True) — blocking is kwarg
+    # Our call: await self.hass.services.async_call(domain, svc, d, blocking=True)
+    # check both:
+    call = hass.services.async_call.call_args
+    assert call.kwargs.get("blocking", call[3] if len(call) > 3 else None) is True
+
+    # One ws.send with a device_action_result
+    client.ws.send.assert_awaited_once()
+    sent = json.loads(client.ws.send.call_args[0][0])
+    assert sent["type"] == "device_action_result"
+    assert sent["request_id"] == "req-abc-123"
+    assert sent["entity_id"] == "light.living_room"
+    assert sent["ok"] is True
+    # New state read from hass.states (was "off" in the mock)
+    assert sent["state"] == "off"
+    assert sent["attributes"]["brightness"] is None
+    assert sent["last_state_change"] is None
+    print("  ✓ action_result_sent_with_new_state")
+
+
+async def test_action_result_sent_with_last_state_change_iso():
+    """When the entity's last_changed is set, the result must carry
+    it as an ISO-8601 UTC string so the cloud can show it back to
+    the APK without re-reading the DB.
+    """
+    from datetime import datetime, timezone
+    hass = make_hass()
+    last_changed = datetime(2026, 10, 18, 10, 0, 0, tzinfo=timezone.utc)
+    state = MockState("light.x", "on", "X", "light", attrs={})
+    state.last_changed = last_changed
+    hass.states = MockStates([state])
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client.ws = AsyncMock()
+    hass.services.async_call = AsyncMock()
+
+    await client._handle_message({
+        "type": "device_action",
+        "request_id": "req-xyz",
+        "domain": "light",
+        "service": "turn_on",
+        "entity_id": "light.x",
+        "data": {},
+    })
+
+    sent = json.loads(client.ws.send.call_args[0][0])
+    assert sent["last_state_change"] == "2026-10-18T10:00:00+00:00"
+    print("  ✓ action_result_sent_with_last_state_change_iso")
+
+
+async def test_action_result_failure_returns_ok_false():
+    """If every service-call fallback raises (no service found at all),
+    the plugin must still send a result so the cloud's awaiter
+    doesn't time out.
+    """
+    hass = make_hass()
+    hass.states = MockStates([])
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client.ws = AsyncMock()
+    # Always raise ServiceNotFound so every fallback fails
+    hass.services.async_call = AsyncMock(
+        side_effect=_ServiceNotFound("not found")
+    )
+
+    await client._handle_message({
+        "type": "device_action",
+        "request_id": "req-fail",
+        "domain": "light",
+        "service": "turn_on",
+        "entity_id": "light.x",
+        "data": {},
+    })
+
+    client.ws.send.assert_awaited_once()
+    sent = json.loads(client.ws.send.call_args[0][0])
+    assert sent["type"] == "device_action_result"
+    assert sent["request_id"] == "req-fail"
+    assert sent["ok"] is False
+    assert "no service" in sent["error"].lower() or "not found" in sent["error"].lower()
+    print("  ✓ action_result_failure_returns_ok_false")
+
+
+async def test_action_without_request_id_sends_no_result():
+    """Backward-compat: if the cloud forgot to include a request_id
+    (shouldn't happen with the new code, but defensive), the plugin
+    silently drops the result rather than crashing.
+    """
+    hass = make_hass()
+    hass.states = MockStates([])
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client.ws = AsyncMock()
+    hass.services.async_call = AsyncMock()
+
+    await client._handle_message({
+        "type": "device_action",
+        # request_id deliberately missing
+        "domain": "light",
+        "service": "turn_on",
+        "entity_id": "light.x",
+        "data": {},
+    })
+
+    client.ws.send.assert_not_called()
+    print("  ✓ action_without_request_id_sends_no_result")
 
 
 async def test_ping_pong():
@@ -479,6 +625,10 @@ async def run_async_tests():
     await test_initial_sync_deferred_until_homeassistant_started()
     await test_dumps_handles_datetime_in_attributes()
     await test_automation_and_script_domains_always_filtered()
+    await test_action_result_sent_with_new_state()
+    await test_action_result_sent_with_last_state_change_iso()
+    await test_action_result_failure_returns_ok_false()
+    await test_action_without_request_id_sends_no_result()
 
 
 if __name__ == "__main__":

@@ -398,12 +398,23 @@ class CloudClient:
     async def _execute_action(self, msg: dict) -> None:
         """Execute an HA service call from a device action.
 
-        Falls back through several strategies if the primary service is not found:
-        1. As requested (e.g., domain.toggle)
-        2. For button domain: button.press
-        3. Generic homeassistant.toggle (works for most domains)
-        4. homeassistant.turn_on / turn_off
+        Runs the service with `blocking=True` so we wait for HA to
+        actually apply the change before returning. After success, we
+        read the entity's fresh state from `hass.states` and send a
+        `device_action_result` reply back to the cloud carrying the
+        same `request_id` as the inbound action. This lets the cloud
+        return the post-action state synchronously in the
+        POST /action response, instead of clients racing to read
+        /state before the next state_change round-trip lands.
+
+        Falls back through several strategies if the primary service is
+        not found:
+          1. As requested (e.g., domain.toggle)
+          2. For button domain: button.press
+          3. Generic homeassistant.toggle (works for most domains)
+          4. homeassistant.turn_on / turn_off
         """
+        request_id = msg.get("request_id")
         domain = msg.get("domain")
         service = msg.get("service")
         entity_id = msg.get("entity_id")
@@ -411,6 +422,10 @@ class CloudClient:
 
         if not all([domain, service, entity_id]):
             _LOGGER.warning("CloudLink: incomplete action: %s", msg)
+            await self._send_action_result(
+                request_id, entity_id or "", ok=False,
+                error="incomplete action (missing domain/service/entity_id)",
+            )
             return
 
         if "entity_id" not in data:
@@ -429,10 +444,19 @@ class CloudClient:
         for svc, d in attempts:
             _LOGGER.warning("CloudLink: attempting %s.%s on %s", domain, svc, entity_id)
             try:
+                # blocking=True: wait for HA to actually apply the
+                # service call before returning. For turn_off this is
+                # typically <500ms; for set_temperature it can be a
+                # few seconds (HA waits for the climate device to
+                # ack). Either way, when this returns, hass.states
+                # has the new state.
                 await self.hass.services.async_call(
-                    domain, svc, d, blocking=False,
+                    domain, svc, d, blocking=True,
                 )
                 _LOGGER.warning("CloudLink: OK %s.%s on %s", domain, svc, entity_id)
+                await self._send_action_result_after_call(
+                    request_id, entity_id, ok=True, error=None,
+                )
                 return
             except Exception as e:
                 err = str(e).lower()
@@ -440,6 +464,98 @@ class CloudClient:
                     _LOGGER.warning("CloudLink: %s.%s not available, trying next", domain, svc)
                     continue
                 _LOGGER.exception("CloudLink: %s.%s failed (non-recoverable)", domain, svc)
+                await self._send_action_result(
+                    request_id, entity_id, ok=False,
+                    error=str(e) or "service call failed",
+                )
                 return
 
         _LOGGER.warning("CloudLink: all attempts failed for %s (entity: %s)", domain, entity_id)
+        await self._send_action_result(
+            request_id, entity_id, ok=False,
+            error="no service available for this entity",
+        )
+
+    async def _send_action_result_after_call(
+        self,
+        request_id: str | None,
+        entity_id: str,
+        *,
+        ok: bool,
+        error: str | None,
+    ) -> None:
+        """Send a `device_action_result` back to the cloud.
+
+        On success, includes the entity's *current* state + attributes
+        (read from hass.states AFTER the blocking service call returns)
+        so the cloud can return it in the /action HTTP response without
+        racing against the next state_change broadcast.
+        """
+        state_value: str | None = None
+        attrs: dict = {}
+        last_state_change: str | None = None
+        if ok:
+            st = self.hass.states.get(entity_id)
+            if st is not None:
+                state_value = st.state
+                attrs = dict(st.attributes)
+                # getattr: MockState in tests + the occasional HA
+                # state object may not expose last_changed
+                lsc = getattr(st, "last_changed", None)
+                if lsc is not None:
+                    # HA's last_changed is tz-naive; assume local
+                    # time but serialize as UTC ISO for consistency
+                    # with the rest of the system.
+                    try:
+                        from datetime import datetime, timezone
+                        if lsc.tzinfo is None:
+                            lsc = lsc.replace(tzinfo=timezone.utc)
+                        last_state_change = lsc.isoformat()
+                    except Exception:
+                        last_state_change = None
+        await self._send_action_result(
+            request_id, entity_id, ok=ok, error=error,
+            state=state_value, attributes=attrs,
+            last_state_change=last_state_change,
+        )
+
+    async def _send_action_result(
+        self,
+        request_id: str | None,
+        entity_id: str,
+        *,
+        ok: bool,
+        error: str | None,
+        state: str | None = None,
+        attributes: dict | None = None,
+        last_state_change: str | None = None,
+    ) -> None:
+        """Low-level WS send for a device_action_result message."""
+        if not request_id:
+            # Cloud didn't tag the action with a request_id (e.g. very
+            # old caller). Nothing to reply to; the result is
+            # unobservable to the cloud in that case.
+            return
+        if not self.ws:
+            _LOGGER.warning(
+                "CloudLink: can't send action_result for %s, WS not connected",
+                request_id[:8],
+            )
+            return
+        msg = {
+            "type": "device_action_result",
+            "request_id": request_id,
+            "entity_id": entity_id,
+            "ok": ok,
+            "error": error,
+            "state": state,
+            "attributes": attributes or {},
+            "last_state_change": last_state_change,
+        }
+        try:
+            await self.ws.send(_dumps(msg))
+        except Exception as e:
+            _LOGGER.warning(
+                "CloudLink: failed to send action_result for %s: %s",
+                request_id[:8], e,
+            )

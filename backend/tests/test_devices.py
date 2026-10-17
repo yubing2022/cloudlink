@@ -366,3 +366,201 @@ async def test_list_devices_unchanged(client, user_with_instance):
     assert sorted(e["entity_id"] for e in real["entities"]) == [
         "light.living_room", "sensor.living_room_temp",
     ]
+
+
+
+@pytest.mark.asyncio
+async def test_control_returns_post_action_state(client, user_with_instance):
+    """Regression: /action must return the NEW state (post-service-call),
+    not the pre-action DB row. Repro for the bug where calling
+    turn_off twice in a row returned state=on the first time
+    (because the action was fire-and-forget and the state hadn't
+    propagated back to the DB yet).
+    """
+    from app.ws import manager as ws_manager_module
+    import asyncio
+    import uuid
+
+    # Login
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Get cloud_token of the user's HA instance
+    from app.models.ha_instance import HAInstance
+    from sqlalchemy import select
+    from app.database import get_db
+    async for db in app.dependency_overrides[get_db]():
+        instance = (await db.execute(
+            select(HAInstance).where(HAInstance.user_id == user_with_instance.id)
+        )).scalar_one()
+        cloud_token = instance.cloud_token
+        break
+
+    # Simulate the HA plugin by stubbing request_action_and_wait so
+    # we don't need a real WS connection. It must simulate the
+    # plugin sending a device_action_result with the new state.
+    async def fake_request_action_and_wait(token, msg, *, timeout=5.0):
+        rid = msg["request_id"]
+        # Echo the result the plugin WOULD send: state="off",
+        # attributes mutated to reflect the action.
+        result = {
+            "type": "device_action_result",
+            "request_id": rid,
+            "entity_id": msg["entity_id"],
+            "ok": True,
+            "error": None,
+            "state": "off",
+            "attributes": {"brightness": None},
+            "last_state_change": "2026-10-18T10:00:00+00:00",
+        }
+        # Simulate tiny network latency
+        await asyncio.sleep(0.01)
+        return result
+
+    original = ws_manager_module.ws_manager.request_action_and_wait
+    ws_manager_module.ws_manager.request_action_and_wait = fake_request_action_and_wait
+    try:
+        resp = await client.post(
+            "/api/devices/light.living_room/action",
+            headers={**h, "Content-Type": "application/json"},
+            json={"domain": "light", "service": "turn_off", "data": {}},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # The response must reflect the post-action state, not the
+        # pre-action DB row (which the user fixture created as
+        # state="on", brightness=200).
+        assert body["status"] == "ok"
+        assert body["entity_id"] == "light.living_room"
+        assert body["state"] == "off", (
+            f"expected post-action state=off, got {body['state']!r} "
+            f"— bug: control returned pre-action state"
+        )
+        assert body["attributes"] == {"brightness": None}
+        assert body["last_state_change"] == "2026-10-18T10:00:00+00:00"
+    finally:
+        ws_manager_module.ws_manager.request_action_and_wait = original
+
+
+@pytest.mark.asyncio
+async def test_control_503_when_ha_offline(client, user_with_instance):
+    """If the HA plugin doesn't have a live WS, /action returns 503
+    immediately (we can detect this synchronously because the WS
+    isn't connected)."""
+    from app.ws import manager as ws_manager_module
+
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Stub request_action_and_wait to raise ConnectionError (HA offline)
+    async def fake(token, msg, *, timeout=5.0):
+        raise ConnectionError("HA is not connected")
+    original = ws_manager_module.ws_manager.request_action_and_wait
+    ws_manager_module.ws_manager.request_action_and_wait = fake
+    try:
+        resp = await client.post(
+            "/api/devices/light.living_room/action",
+            headers={**h, "Content-Type": "application/json"},
+            json={"domain": "light", "service": "turn_off", "data": {}},
+        )
+        assert resp.status_code == 503
+        assert "offline" in resp.json()["detail"].lower()
+    finally:
+        ws_manager_module.ws_manager.request_action_and_wait = original
+
+
+@pytest.mark.asyncio
+async def test_control_504_on_plugin_timeout(client, user_with_instance):
+    """If the plugin never replies (e.g. the action hangs in HA),
+    /action surfaces 504 after the 5s timeout."""
+    from app.ws import manager as ws_manager_module
+    import asyncio
+
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    async def slow_request(token, msg, *, timeout=5.0):
+        # Simulate a plugin that never replies — wait longer than the
+        # server's timeout. We use a short real timeout for the test
+        # by sleeping past the server's effective 5s; in practice the
+        # server's wait_for will time out first. To keep the test fast,
+        # we use a tiny server-side timeout override is not available
+        # so we let the server hit 5s. That's the actual behaviour
+        # we're validating, but it makes the test slow. Use a shorter
+        # wait by raising TimeoutError directly.
+        await asyncio.sleep(0.01)
+        raise asyncio.TimeoutError()
+
+    original = ws_manager_module.ws_manager.request_action_and_wait
+    ws_manager_module.ws_manager.request_action_and_wait = slow_request
+    try:
+        resp = await client.post(
+            "/api/devices/light.living_room/action",
+            headers={**h, "Content-Type": "application/json"},
+            json={"domain": "light", "service": "turn_off", "data": {}},
+        )
+        assert resp.status_code == 504
+        assert "in time" in resp.json()["detail"].lower()
+    finally:
+        ws_manager_module.ws_manager.request_action_and_wait = original
+
+
+@pytest.mark.asyncio
+async def test_control_502_when_plugin_reports_failure(client, user_with_instance):
+    """If the plugin's service call itself failed (ok=False in result),
+    /action surfaces 502 with the plugin's error message."""
+    from app.ws import manager as ws_manager_module
+
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    async def fake(token, msg, *, timeout=5.0):
+        return {
+            "type": "device_action_result",
+            "request_id": msg["request_id"],
+            "ok": False,
+            "error": "service light.turn_off not found",
+            "state": None,
+            "attributes": {},
+            "last_state_change": None,
+        }
+    original = ws_manager_module.ws_manager.request_action_and_wait
+    ws_manager_module.ws_manager.request_action_and_wait = fake
+    try:
+        resp = await client.post(
+            "/api/devices/light.living_room/action",
+            headers={**h, "Content-Type": "application/json"},
+            json={"domain": "light", "service": "turn_off", "data": {}},
+        )
+        assert resp.status_code == 502
+        assert "service light.turn_off not found" in resp.json()["detail"]
+    finally:
+        ws_manager_module.ws_manager.request_action_and_wait = original

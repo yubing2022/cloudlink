@@ -6,7 +6,7 @@ Two kinds of connections:
 """
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import WebSocket
 
@@ -19,6 +19,11 @@ class ConnectionManager:
         self._ha_connections: dict[str, WebSocket] = {}
         # user_id -> set of WebSocket (a user can have multiple devices)
         self._client_connections: dict[int, set[WebSocket]] = {}
+        # request_id -> Future[dict] for in-flight device_action calls
+        # awaiting their post-action state from the HA plugin. Used by
+        # /api/devices/{id}/action to return the *new* state instead of
+        # the pre-action DB row.
+        self._pending_action_results: dict[str, asyncio.Future] = {}
         self._lock = asyncio.Lock()
         self._heartbeat_task: Optional[asyncio.Task] = None
 
@@ -53,6 +58,17 @@ class ConnectionManager:
     async def disconnect_ha(self, cloud_token: str) -> None:
         async with self._lock:
             self._ha_connections.pop(cloud_token, None)
+        # Wake any callers blocked in request_action_and_wait() so they
+        # get a ConnectionError instead of timing out 5s later. Done
+        # outside the lock because the waiters' set_exception() can
+        # re-enter send_to_ha() under cancellation.
+        n = self._drop_pending_actions_for_connection()
+        if n:
+            logger.info(
+                "HA disconnected: %s... failed %d in-flight action request(s)",
+                cloud_token[:8], n,
+            )
+        else:
             logger.info("HA disconnected: %s...", cloud_token[:8])
 
     async def send_to_ha(self, cloud_token: str, message: dict) -> bool:
@@ -70,6 +86,85 @@ class ConnectionManager:
 
     def is_ha_online(self, cloud_token: str) -> bool:
         return cloud_token in self._ha_connections
+
+    # ---- Action request/response (HA plugin round-trip) ----
+
+    def _register_pending_action(self, request_id: str) -> asyncio.Future:
+        """Create a Future for a device_action's eventual result message.
+
+        Caller MUST eventually resolve it via _resolve_pending_action()
+        (or it will be GC'd on disconnect). The Future's result is the
+        full `device_action_result` dict the HA plugin sends back.
+        """
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_action_results[request_id] = fut
+        return fut
+
+    def _resolve_pending_action(self, request_id: str, result: dict) -> bool:
+        """Resolve the Future for a completed device_action. Returns True
+        if a waiter was actually found (False = late/duplicate result)."""
+        fut = self._pending_action_results.pop(request_id, None)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(result)
+        return True
+
+    def _fail_pending_action(self, request_id: str, exc: BaseException) -> bool:
+        fut = self._pending_action_results.pop(request_id, None)
+        if fut is None or fut.done():
+            return False
+        fut.set_exception(exc)
+        return False
+
+    def _drop_pending_actions_for_connection(self) -> int:
+        """Called when an HA WS disconnects. Fails all in-flight action
+        requests so callers don't hang on their await."""
+        if not self._pending_action_results:
+            return 0
+        ids = list(self._pending_action_results.keys())
+        n = 0
+        for rid in ids:
+            if self._fail_pending_action(rid, ConnectionError("HA disconnected")):
+                n += 1
+        return n
+
+    async def request_action_and_wait(
+        self,
+        cloud_token: str,
+        action_msg: dict,
+        *,
+        timeout: float = 5.0,
+    ) -> dict:
+        """Send a device_action to HA and wait for its post-action result.
+
+        The action_msg MUST already contain a `request_id` field; the
+        same id is expected in the plugin's `device_action_result`
+        reply. Raises:
+          - ConnectionError: HA is offline or WS write failed
+          - asyncio.TimeoutError: plugin didn't reply within `timeout` s
+          - The result may also be `{"ok": False, "error": "..."}` if
+            the plugin's service call failed (the plugin sends a
+            result dict in that case, not an exception).
+        """
+        request_id = action_msg.get("request_id")
+        if not request_id:
+            raise ValueError("action_msg must carry a request_id")
+        fut = self._register_pending_action(request_id)
+        try:
+            sent = await self.send_to_ha(cloud_token, action_msg)
+            if not sent:
+                raise ConnectionError("HA is not connected")
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            # Don't leak the Future; drop it so a future late reply
+            # for the same id doesn't accidentally resolve something
+            # else's await.
+            self._pending_action_results.pop(request_id, None)
+            raise
+        except BaseException:
+            # Same cleanup on any other failure path.
+            self._pending_action_results.pop(request_id, None)
+            raise
 
     # ---- Client (mobile app) connections ----
 
