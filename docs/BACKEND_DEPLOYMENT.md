@@ -1,7 +1,8 @@
-# 后端代码部署与维护指南
+# CloudLink 仓库维护指南（后端 + Android + HA 插件）
 
-> 写给接手的另一个 AI 编码工具（也是给将来读这份文档的人）。
-> 包含：架构概览、**部署流程（重点）**、测试方法、硬约束、常见操作、协调协议。
+> 这份仓库现在由**一个维护者**负责全部四个目录（`backend/` / `android/` / `ha-plugin/` / `infra/`），
+> 不再有"后端 AI / APK AI"的分工。文档按这个前提写的。
+> 包含：架构概览、**部署流程（重点）**、测试方法、硬约束、常见操作、跨组件契约。
 
 ## 0. 30 秒 TL;DR
 
@@ -19,7 +20,7 @@ workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "docker cp /opt/cl
 workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "curl -s -o /dev/null -w 'health HTTP %{http_code}\\n' http://localhost:8000/health"
 ```
 
-如果你只能记住 3 件事：(1) 永远删 `__pycache__` 再重启；(2) `Domain mismatch: device is ` 这串字符是已装机 APK 的兜底，**别动**；(3) 跟 APK AI 的协议看第 7 节。
+如果你只能记住 3 件事：(1) 永远删 `__pycache__` 再重启；(2) `Domain mismatch: device is ` 这串字符是已装机 APK 的兜底，**别动**；(3) 改后端错误语义必须同步检查 APK 的 `mapHttpError`，见第 7 节。
 
 ---
 
@@ -43,7 +44,7 @@ cloudlink-backend (FastAPI + uvicorn, :8000)
 - **`workbench` CLI** (`/usr/local/bin/workbench`)：阿里云提供的免 SSH 直连 ECS 工具，通过 OSS 中转文件 + 调 ECS API 执行命令。比 SSH 简单，比 SSH 慢。
 - **ECS (`i-bp17ymd3baklc58tzbth`, `118.31.225.109:8000`)**：线上后端。
 - **HA 实例** (`192.168.3.143`)：家里树莓派，HA 跑在这里。cloudlink 集成通过 WSS 连 ECS。
-- **APK / Android 手机**：用户手机，装 AgentBridge capability 客户端。
+- **APK / Android 手机**：用户手机，装的是 **CloudLink App 本身**（`com.yubing.cloudlink`），capability 服务 `CloudLinkCapabilityService` 就内嵌在这个 APK 里（不是独立 APK）。AgentBridgeClient 通过 `ACTION_CAPABILITY_PROVIDER` 扫到它。
 
 ### 1.3 代码与配置布局
 
@@ -264,21 +265,44 @@ f"Domain mismatch: device is {device.domain}, request says {body.domain}",
 
 **改了其中一个 message 但忘了改对应 error_type，就会自相矛盾**——APK 看到 `error_type=device_not_found` 配 `message="Entity not found"` 会困惑。所有 4 处 detail 都通过 `_error()` 构造（`backend/app/api/devices.py:23-34`），保持它作为单一来源。
 
-### 4.4 不在范围内的目录
+### 4.4 四个目录都在维护范围内
 
-本次任务范围**只**是 `backend/`。**别动**：
-- `android/` — APK AI 在改
-- `ha-plugin/` — HA 集成代码，部署到 `/config/custom_components/cloudlink/`，不是 ECS
-- `infra/` — 部署相关配置，本次没动
-- `docs/phases/` — 历史 phase 文档
+以前这里写着"只改 `backend/`，别动 `android/`"——那是两个 AI 分工时的边界，**现在已经不成立**。四个目录都可以改，区别只在于改动后怎么生效：
 
-但**可以读**它们以了解系统行为。
+| 目录 | 运行在哪 | 改动后如何生效 |
+|---|---|---|
+| `backend/` | ECS 的 `cloudlink-backend` 容器 | §2 的 `docker cp` + 清 `__pycache__` + `docker restart` |
+| `android/` | 用户手机（`com.yubing.cloudlink`） | 本地 `gradle assembleDebug` → `adb install -r` → **手动打开一次 App**（见 §4.6） |
+| `ha-plugin/` | HA 主机 `192.168.3.143` 的 `/config/custom_components/cloudlink/` | 拷文件 + `ha core restart`（不是 reload，reload 不重跑 `device_sync`） |
+| `infra/` | ECS 的 nginx 等容器 | 按 §2.4 重建对应服务 |
+
+`docs/phases/` 是历史 phase 文档，只读不改。
+
+唯一真正的硬约束是**跨目录契约**：改 `backend/` 的 HTTP 行为时，同一轮里必须检查 `android/` 的 `mapHttpError` 还匹配不匹配（第 7 节）。
 
 ### 4.5 工作区里的 untracked 文件
 
-`backend/app/api/devices.py.bak`（2026-10-17 22:21）是上次回退 commit 留下的，**故意保留**（可能是用户的保险）。**别 commit 它，别删它**。
+`backend/app/api/devices.py.bak`（2026-10-17 22:21）是上次回退 commit 留下的，**故意保留**（用户的保险）。**别 commit 它，别删它**。
 
-`android/` 下有一大堆 untracked（用户在做 com.yourname → com.yubing 的重构）。**别 git add 它们**——`git add` 时只动 backend/。
+`android/` 的包名迁移（`com.yourname.cloudlink` → `com.yubing.cloudlink`）已于 2026-10-18 全部入库，工作区应当是 clean 的。如果哪天又冒出一批 untracked 的 `.kt`，先确认是不是新建文件的正常状态，别默认"这些不重要"。
+
+### 4.6 Android 构建与装机
+
+仓库**没有 `gradlew`**，用系统 `gradle`；而且默认 `JAVA_HOME` 若是 openjdk 26，`androidJdkImage` 的 jlink 会直接失败。必须切 Android Studio 自带的 JBR：
+
+```bash
+cd /Users/guoyubing/Codex/cloudlink/android
+JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" gradle assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+装机后**必须手动打开一次 CloudLink App**。`adb install -r` 会杀掉进程，而这台荣耀手机不允许 AgentBridgeClient 在后台把能力提供方 bind 起来（`stopped=false`、无崩溃、manifest 正常，纯粹是系统后台拉起策略）。不打开的话所有 `cloudlink.device.*` 调用都返回：
+
+```
+provider_offline: provider unavailable: com.yubing.cloudlink
+```
+
+这不是代码问题，别去改代码排查。
 
 ---
 
@@ -412,7 +436,7 @@ workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
 |---|---|---|
 | 1. pytest 全绿 | `cd backend && python3 -m pytest tests/ -q` | `XX passed, 0 failed` |
 | 2. 没有意外带入未跟踪文件 | `git status --short backend/` | 只能看到 `M` 或 `A`，没有 `??` 残留 |
-| 3. staged 的只有 backend | `git diff --cached --stat` | 路径都在 `backend/` 下 |
+| 3. staged 的只有本次要部署的文件 | `git diff --cached --stat` | 路径都在预期范围内，没有误带 `.bak` |
 | 4. push 成功 | `git push origin main` | 看到 `To github.com:yubing2022/cloudlink.git` |
 | 5. health check | `curl -s -o /dev/null -w '%{http_code}\n' http://118.31.225.109:8000/health` | `200` |
 | 6. HA 重新连接 | `ha core logs` 看 `WS connected` | 看到一行新的 connected 日志 |
@@ -422,44 +446,71 @@ workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
 
 ---
 
-## 7. 与 APK AI 的协调协议
+## 7. 跨组件契约（改后端时必须连带检查的清单）
 
-你的搭档是另一个 AI 工具，它在改 `android/`，**不会改也不会部署 backend**。但你们共享 `git main` 和同一个 `118.31.225.109:8000`。
+现在没有"另一个 AI 在改 APK"这回事，这一节的内容从「协调协议」变成了「自己跟自己对契约」。风险本身没变：**后端和 APK 是两个独立的发布时间**——后端改完几十秒就上线，APK 却要重新编译、装机、再由用户手动打开。一旦后端的 HTTP 行为变了而手机上的 APK 还是旧版，线上就是错配状态。
 
-### 7.1 你们的边界
+### 7.1 一套固定的联动步骤
 
-- **你（后端 AI）** 改/部署 `backend/`、`infra/`、`docs/`（如果你要）
-- **APK AI** 改/部署 `android/`、`ha-plugin/`（注意 ha-plugin 是部署到 192.168.3.143，不是 ECS）
-- **都不要碰对方的目录**
+改任何影响 HTTP 行为的后端代码时，按这个顺序走：
 
-### 7.2 协议变更时怎么协作
+1. 改 `backend/`，跑 `pytest tests/ -q`
+2. 同步看 `android/app/src/main/java/com/yubing/cloudlink/capability/CloudLinkCapabilityService.kt::mapHttpError` 是否还能正确分类新的 detail 形状；需要改就在**同一个 commit** 里改完
+3. 本地编译 APK 并装机（§4.6）
+4. 部署后端（§2）
+5. 经 MCP 全链路验证（§7.5）
 
-后端任何**会改变 HTTP API 行为**的改动（endpoint 形状、HTTP 状态码、response detail 字段、错误 `error_type`），**必须**先告诉 APK AI，等它把 capability 的 `mapHttpError` 也改好，再部署。
+**如果只部署后端、没装新 APK**，旧 APK 会按老规则解析新 detail，表现是错误码降级（例如 `DOMAIN_MISMATCH` 变成 `INVALID_PARAMS`）却完全不报错。这类问题最难查——它不崩，只是答错。
 
-历史上已经踩过的坑（必须避免重蹈）：
-- `68fb8d9` action 错误语义（service_not_found / call_failed / etc.）— 改了 detail 形状
-- `701b832` 404 错误 detail 改成结构化 dict
-- `988a5cd` / `80aea8f` 404 message 文案回退
-- 每次都要 APK 那边同步改 `mapHttpError` 才能上线
+### 7.2 当前已固化的契约
 
-### 7.3 协调流程（实际做法）
+| HTTP | `error_type` | message 前缀 | APK 侧错误码 |
+|---|---|---|---|
+| 404 | `entity_not_found` | `Entity not found` | `ENTITY_NOT_FOUND` |
+| 404 | `device_not_found` | `Device not found` | `ENTITY_NOT_FOUND` |
+| 400 | `domain_mismatch` | `Domain mismatch: device is ` | `DOMAIN_MISMATCH` |
+| 400 | `service_not_found` | `Action <domain>.<service> not found` | `SERVICE_NOT_FOUND` |
+| 400 | `invalid_params` | — | `INVALID_PARAMS` |
+| 502 | `call_failed` | — | `SERVICE_CALL_FAILED` |
+| 503 | `ha_offline` | — | `HA_UNAVAILABLE` |
+| 504 | `ha_timeout` | — | `HA_TIMEOUT` |
 
-1. **改 backend 之前**：在 commit message 里说清楚动了什么（endpoints, status codes, error_types）。
-2. **改 backend 之前**：如果是大改，主动 ping 一下 APK AI 那边（这个项目里谁在协调——应该是用户 guoyubing 手动转达）。
-3. **部署之前**：commit 已 push 到 main，APK AI 也有机会看到 diff。
-4. **APK 改完才部署 backend**：如果 APK 那边有未提交的代码会挂在新协议上，就先别部署。
+`detail` 统一是 `{"error_type": ..., "message": ..., "entity_id"?: ...}`，由 `devices.py` 的 `_error()` 单一构造。**新加错误分支必须走 `_error()`**，不要手写 `HTTPException(400, "字符串")`——那会让 APK 拿到字符串 shape，只能落到兜底逻辑。
 
-### 7.4 你能影响 APK 端的契约
+### 7.3 `mapHttpError` 里有两处靠字符串兜底
 
-- `backend/app/api/devices.py` 的 `_error()` helper 是 404 错误的单一来源
-- `backend/app/api/devices.py` 的 `control_device` 决定了 action 路径的所有响应形状
-- `backend/app/ws/manager.py::request_action_and_wait` 决定 action 5s 超时、`request_id` 协议
+`CloudLinkCapabilityService.kt` 在 detail 里**没有** `error_type` 时（兼容旧后端）会退化成字符串匹配：
 
-如果 APK 端的 capability 行为有 bug（比如这次 getState 走 runCatching 把 500 误报成 404），**不要在后端迁就**——告诉 APK AI 改 capability 走 `mapHttpError`。
+- `detail.contains("Domain mismatch")` → `DOMAIN_MISMATCH`
+- `detail.contains("not found")`（配合状态码）→ `ENTITY_NOT_FOUND` / `SERVICE_NOT_FOUND`
 
-### 7.5 共享测试
+所以 `Domain mismatch: device is ` 这串字符不能动（§4.1 已单列）。真要改文案，先发新 APK，等线上全升完再改后端。
 
-`backend/tests/test_devices.py` 里有 21 个测试用例，覆盖大部分契约。APK AI 改 capability 时，应该参考这些用例（特别是 4xx/5xx 的响应结构）来同步更新 Kotlin 端的 `mapHttpError`。
+### 7.4 历史踩过的坑（别再重犯）
+
+- `68fb8d9` action 错误语义（service_not_found / call_failed / ha_offline / ha_timeout）——首次把 detail 结构化
+- `701b832` 404 的 detail 从字符串改成 dict
+- `99b9fd7` 把 404 的 message 改成 `Entity not found` 却没改 `error_type=device_not_found` → **类型和文案自相矛盾**，`988a5cd` 回退
+- `80aea8f` capability 的 `getState` 原来用 `runCatching{}` 吞掉一切异常，导致 500 被误报成 `ENTITY_NOT_FOUND`；改成只有 404/405 才降级拉全量列表
+
+这条线上的教训只有一条：**`error_type` 和 `message` 是两个字段，必须同时改、语义一致。**
+
+### 7.5 验证入口（改完必跑）
+
+APK 侧能力的入口是 AgentBridge 的 MCP（`http://127.0.0.1:9023/mcp`），不是 adb：
+
+```bash
+# 列工具（确认三个能力在线）
+curl -s http://127.0.0.1:9023/mcp -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# 调一次（示例：读落地灯状态）
+curl -s http://127.0.0.1:9023/mcp -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"cloudlink.device.get_state@v1","arguments":{"entity_id":"light.yeelink_cn_1208334138_mbulb3_s_2"}}}'
+```
+
+一次完整回归至少覆盖：正常 `get_state`、正常 `turn_on`、404 实体、domain 不符、假 service、真调用失败（如 `brightness:"not_a_number"`）。后三个是错误码正确性的关键，不能只看正常路径。
+
 
 ---
 
@@ -529,10 +580,12 @@ nohup workbench daemon start > /tmp/wb.log 2>&1 &
 
 ## 10. 版本
 
-- 文档基线 commit：`80aea8f`（`fix(capability): getState() should surface backend 404 detail like control()`）
+- 文档基线 commit：`5e21813`（`refactor(android): rename package to com.yubing.cloudlink, embed capability`）
+- 修订：2026-10-18 第二版 —— 按**单一维护者**重写 §4.4 / §4.5 / §7，新增 §4.6 Android 构建与装机
 - 撰写时间：2026-10-18
 - 适用 Python：3.11+（容器内是 python:3.11-slim）
 - FastAPI：≥ 0.115
 - SQLAlchemy：2.x async
+- Android：AGP + compose BOM，`compileSdk 35` / `minSdk 26`，构建需 JDK 17（Android Studio JBR）
 
-更新这份文档时，请在文件头加 commit hash。
+更新这份文档时，请把上面那行 commit hash 一起更新。
