@@ -6,21 +6,22 @@
 
 ## 0. 30 秒 TL;DR
 
-后端跑在阿里云 ECS `i-bp17ymd3baklc58tzbth`（`118.31.225.109:8000`），用 `workbench` CLI 通过 OSS 中转部署。**改代码 → 5 步命令 → ECS 容器重启**。详细步骤看第 3 节。
+后端跑在阿里云 ECS `i-bp17ymd3baklc58tzbth`（`118.31.225.109:8000`），用 `workbench` CLI 通过 OSS 中转部署。日常只需要一条命令：
 
 ```bash
-# 本地写完代码 → 本地测试 → push
-cd /Users/guoyubing/Codex/cloudlink/backend
-python3 -m pytest tests/test_devices.py -q       # 必须全绿
-cd .. && git add <files> && git commit -m "..." && git push origin main
-
-# 部署到 ECS（5 步，30 秒内完成）
-workbench upload <local_file> /opt/cloudlink/backend/<path> --instance-id i-bp17ymd3baklc58tzbth --force
-workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "docker cp /opt/cloudlink/backend/<path> cloudlink-backend:/app/<path> && docker exec cloudlink-backend find /app/app -name __pycache__ -type d -exec rm -rf {} + && docker restart cloudlink-backend"
-workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "curl -s -o /dev/null -w 'health HTTP %{http_code}\\n' http://localhost:8000/health"
+cd /Users/guoyubing/Codex/cloudlink
+scripts/deploy.sh --status     # 可选：先看要在线上改什么
+scripts/deploy.sh              # 语法检查 → pytest → 上传 → docker cp → 清 __pycache__ → restart → health
 ```
 
-如果你只能记住 3 件事：(1) 永远删 `__pycache__` 再重启；(2) `Domain mismatch: device is ` 这串字符是已装机 APK 的兜底，**别动**；(3) 改后端错误语义必须同步检查 APK 的 `mapHttpError`，见第 7 节。
+`scripts/deploy.sh` 自带测试、语法检查、清 `__pycache__`、health 轮询和失败日志，失败退出码 1 且可重复执行。手敲的 5 步版本在 §2.1，脚本坏了才用。
+
+```bash
+# 提交照旧（脚本只负责发到线上）
+git add <files> && git commit -m "..." && git push origin main
+```
+
+如果你只能记住 3 件事：(1) 永远删 `__pycache__` 再重启（脚本已内置）；(2) `Domain mismatch: device is ` 这串字符是已装机 APK 的兜底，**别动**；(3) 改后端错误语义必须同步检查 APK 的 `mapHttpError`，见第 7 节。
 
 ---
 
@@ -59,6 +60,36 @@ cloudlink-backend (FastAPI + uvicorn, :8000)
 ---
 
 ## 2. 部署流程（**这一节是重点**）
+
+### 2.0 一键部署（日常就用这个）
+
+```bash
+scripts/deploy.sh                 # 部署「上次部署之后」backend/ 的所有改动
+scripts/deploy.sh --status        # 只看线上状态 + 待部署文件，不做改动
+scripts/deploy.sh --dry-run       # 只打印计划
+scripts/deploy.sh --all           # 全量（首次部署 / 记录丢了）
+scripts/deploy.sh --changed origin/main   # 指定比较基线
+scripts/deploy.sh --full          # 连 compose/Dockerfile/.env.production 一起传，重建镜像
+scripts/deploy.sh --migrate       # 顺带 alembic upgrade head
+scripts/deploy.sh backend/app/api/devices.py   # 只部署指定文件
+```
+
+脚本做的就是下面 §2.1 那 5 步，另外加了几个保险：
+
+| 阶段 | 行为 |
+|---|---|
+| 预检 | 检查 workbench/python3；对要传的 `.py` 做 `ast.parse` 语法检查（**不过就不上传**） |
+| 测试 | 自动找带 pytest 的解释器，跑 `tests/ --ignore=tests/integration`（避免打到线上）；`--no-test` 跳过 |
+| 上传 | 逐个 `workbench upload --force` |
+| 应用 | 一个远端脚本里 `docker cp` → 清 `__pycache__` → `docker restart` → 轮询 health（最多 60s） |
+| 失败 | 自动打 `docker logs --tail 60`，退出码 1；脚本可重复执行 |
+| 收尾 | 容器内 health + 公网 health 都 200 才算成功，然后把当前 HEAD 写进服务器 `/opt/cloudlink/.deployed_commit` |
+
+下次跑 `scripts/deploy.sh` 时就用这个 marker 做增量判断（`git diff <marker> -- backend/` 加上未跟踪的新文件）。`.bak` / `*.pyc` / `__pycache__` 之类永远不会被上传。
+
+`--full` 会走 `docker compose build backend && up -d`（超时 1500s），只在你改了 `docker-compose.yml` / `Dockerfile` / `.env.production` 时才需要。
+
+下面的手工流程留着：脚本坏了、或者需要精细控制（比如只 cp 不改 compose、单独跑迁移）时照着手敲。
 
 ### 2.1 完整流程
 
@@ -582,6 +613,7 @@ nohup workbench daemon start > /tmp/wb.log 2>&1 &
 
 - 文档基线 commit：`5e21813`（`refactor(android): rename package to com.yubing.cloudlink, embed capability`）
 - 修订：2026-10-18 第二版 —— 按**单一维护者**重写 §4.4 / §4.5 / §7，新增 §4.6 Android 构建与装机
+- 修订：2026-10-18 第三版 —— §2.0 增加 `scripts/deploy.sh` 一键部署（脚本已实现，旧的手工 5 步保留在 §2.1）
 - 撰写时间：2026-10-18
 - 适用 Python：3.11+（容器内是 python:3.11-slim）
 - FastAPI：≥ 0.115
