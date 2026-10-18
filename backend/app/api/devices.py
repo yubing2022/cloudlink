@@ -18,6 +18,37 @@ from app.ws.manager import ws_manager
 router = APIRouter(prefix="/devices", tags=["devices"])
 
 
+def _error(
+    status_code: int,
+    error_type: str,
+    message: str,
+    entity_id: str | None = None,
+) -> HTTPException:
+    """Build a structured error detail for the devices API.
+
+    Every failure in this module carries {"error_type", "message"} (plus
+    entity_id when relevant) so callers can branch on a stable code
+    instead of parsing English prose. FastAPI nests this under "detail",
+    so the wire shape is:
+
+        {"detail": {"error_type": ..., "message": ..., "entity_id": ...}}
+
+    The message keeps the original wording (e.g. "Domain mismatch: ...")
+    so clients that still treat detail as a plain string — and the
+    Android capability, which sniffs "Domain mismatch" as a fallback —
+    keep working unchanged.
+    """
+    detail: dict[str, object] = {"error_type": error_type, "message": message}
+    if entity_id is not None:
+        detail["entity_id"] = entity_id
+    return HTTPException(status_code, detail)
+
+
+def _not_found(error_type: str, message: str, entity_id: str) -> HTTPException:
+    return _error(status.HTTP_404_NOT_FOUND, error_type, message, entity_id)
+
+
+
 @router.get("", response_model=list[HADeviceSchema])
 async def list_devices(
     user: Annotated[User, Depends(get_current_user)],
@@ -90,7 +121,7 @@ async def get_device_state(
     )
     ent = (await db.execute(stmt)).scalar_one_or_none()
     if not ent:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Entity not found")
+        raise _not_found("entity_not_found", "Entity not found", entity_id)
     return ent
 
 
@@ -117,7 +148,7 @@ async def get_device(
     )
     ent = (await db.execute(stmt)).scalar_one_or_none()
     if not ent:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Device not found")
+        raise _not_found("device_not_found", "Device not found", entity_id)
     if ent.device:
         return ent.device
     # Orphan entity - wrap as a plain Pydantic model so it doesn't get
@@ -149,13 +180,15 @@ async def control_device(
     )
     row = (await db.execute(stmt)).first()
     if not row:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Device not found")
+        raise _not_found("device_not_found", "Device not found", entity_id)
     device, instance = row
 
     if body.domain and body.domain != device.domain:
-        raise HTTPException(
+        raise _error(
             status.HTTP_400_BAD_REQUEST,
+            "domain_mismatch",
             f"Domain mismatch: device is {device.domain}, request says {body.domain}",
+            entity_id,
         )
 
     # Send the action and block until the HA plugin reports the new

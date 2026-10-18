@@ -103,7 +103,13 @@ async def test_get_device_state_not_found(client, user_with_instance):
 
     resp = await client.get("/api/devices/light.does_not_exist/state", headers=h)
     assert resp.status_code == 404
-    assert resp.json() == {"detail": "Entity not found"}
+    assert resp.json() == {
+        "detail": {
+            "error_type": "entity_not_found",
+            "message": "Entity not found",
+            "entity_id": "light.does_not_exist",
+        }
+    }
 
 
 @pytest.mark.asyncio
@@ -131,7 +137,13 @@ async def test_get_device_state_other_user_hidden(client, user_with_instance):
     # Entity belongs to user_with_instance, not the intruder.
     resp = await client.get("/api/devices/light.living_room/state", headers=h)
     assert resp.status_code == 404
-    assert resp.json() == {"detail": "Entity not found"}
+    assert resp.json() == {
+        "detail": {
+            "error_type": "entity_not_found",
+            "message": "Entity not found",
+            "entity_id": "light.living_room",
+        }
+    }
 
 
 # --------------------------------------------------------------------------- #
