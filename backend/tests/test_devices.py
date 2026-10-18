@@ -452,8 +452,7 @@ async def test_control_returns_post_action_state(client, user_with_instance):
 @pytest.mark.asyncio
 async def test_control_503_when_ha_offline(client, user_with_instance):
     """If the HA plugin doesn't have a live WS, /action returns 503
-    immediately (we can detect this synchronously because the WS
-    isn't connected)."""
+    with structured detail {error_type: ha_offline}."""
     from app.ws import manager as ws_manager_module
 
     await client.post("/api/auth/register", json={
@@ -466,7 +465,6 @@ async def test_control_503_when_ha_offline(client, user_with_instance):
     })).json()["access_token"]
     h = {"Authorization": f"Bearer {token}"}
 
-    # Stub request_action_and_wait to raise ConnectionError (HA offline)
     async def fake(token, msg, *, timeout=5.0):
         raise ConnectionError("HA is not connected")
     original = ws_manager_module.ws_manager.request_action_and_wait
@@ -478,7 +476,9 @@ async def test_control_503_when_ha_offline(client, user_with_instance):
             json={"domain": "light", "service": "turn_off", "data": {}},
         )
         assert resp.status_code == 503
-        assert "offline" in resp.json()["detail"].lower()
+        detail = resp.json()["detail"]
+        assert detail["error_type"] == "ha_offline"
+        assert "offline" in detail["message"].lower()
     finally:
         ws_manager_module.ws_manager.request_action_and_wait = original
 
@@ -486,7 +486,7 @@ async def test_control_503_when_ha_offline(client, user_with_instance):
 @pytest.mark.asyncio
 async def test_control_504_on_plugin_timeout(client, user_with_instance):
     """If the plugin never replies (e.g. the action hangs in HA),
-    /action surfaces 504 after the 5s timeout."""
+    /action surfaces 504 with structured detail {error_type: ha_timeout}."""
     from app.ws import manager as ws_manager_module
     import asyncio
 
@@ -501,14 +501,6 @@ async def test_control_504_on_plugin_timeout(client, user_with_instance):
     h = {"Authorization": f"Bearer {token}"}
 
     async def slow_request(token, msg, *, timeout=5.0):
-        # Simulate a plugin that never replies — wait longer than the
-        # server's timeout. We use a short real timeout for the test
-        # by sleeping past the server's effective 5s; in practice the
-        # server's wait_for will time out first. To keep the test fast,
-        # we use a tiny server-side timeout override is not available
-        # so we let the server hit 5s. That's the actual behaviour
-        # we're validating, but it makes the test slow. Use a shorter
-        # wait by raising TimeoutError directly.
         await asyncio.sleep(0.01)
         raise asyncio.TimeoutError()
 
@@ -521,15 +513,18 @@ async def test_control_504_on_plugin_timeout(client, user_with_instance):
             json={"domain": "light", "service": "turn_off", "data": {}},
         )
         assert resp.status_code == 504
-        assert "in time" in resp.json()["detail"].lower()
+        detail = resp.json()["detail"]
+        assert detail["error_type"] == "ha_timeout"
+        assert "in time" in detail["message"].lower()
     finally:
         ws_manager_module.ws_manager.request_action_and_wait = original
 
 
 @pytest.mark.asyncio
-async def test_control_502_when_plugin_reports_failure(client, user_with_instance):
-    """If the plugin's service call itself failed (ok=False in result),
-    /action surfaces 502 with the plugin's error message."""
+async def test_control_400_when_service_not_found(client, user_with_instance):
+    """Plugin reports error_type=service_not_found → HTTP 400 with
+    structured detail. The Android capability already maps this to
+    a 4xx user-actionable error."""
     from app.ws import manager as ws_manager_module
 
     await client.post("/api/auth/register", json={
@@ -547,6 +542,99 @@ async def test_control_502_when_plugin_reports_failure(client, user_with_instanc
             "type": "device_action_result",
             "request_id": msg["request_id"],
             "ok": False,
+            "error_type": "service_not_found",
+            "error": "Service light.set_brightness not found.",
+            "state": None,
+            "attributes": {},
+            "last_state_change": None,
+        }
+    original = ws_manager_module.ws_manager.request_action_and_wait
+    ws_manager_module.ws_manager.request_action_and_wait = fake
+    try:
+        resp = await client.post(
+            "/api/devices/light.living_room/action",
+            headers={**h, "Content-Type": "application/json"},
+            json={"domain": "light", "service": "set_brightness", "data": {"brightness": 50}},
+        )
+        assert resp.status_code == 400, resp.text
+        detail = resp.json()["detail"]
+        assert detail["error_type"] == "service_not_found"
+        assert "set_brightness" in detail["message"]
+        assert detail["entity_id"] == "light.living_room"
+    finally:
+        ws_manager_module.ws_manager.request_action_and_wait = original
+
+
+@pytest.mark.asyncio
+async def test_control_502_when_call_failed(client, user_with_instance):
+    """Plugin reports error_type=call_failed → HTTP 502 (gateway error).
+
+    The new structured detail replaces the previous bare-string.
+    """
+    from app.ws import manager as ws_manager_module
+
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    async def fake(token, msg, *, timeout=5.0):
+        return {
+            "type": "device_action_result",
+            "request_id": msg["request_id"],
+            "ok": False,
+            "error_type": "call_failed",
+            "error": "device is unreachable",
+            "state": None,
+            "attributes": {},
+            "last_state_change": None,
+        }
+    original = ws_manager_module.ws_manager.request_action_and_wait
+    ws_manager_module.ws_manager.request_action_and_wait = fake
+    try:
+        resp = await client.post(
+            "/api/devices/light.living_room/action",
+            headers={**h, "Content-Type": "application/json"},
+            json={"domain": "light", "service": "turn_on", "data": {}},
+        )
+        assert resp.status_code == 502, resp.text
+        detail = resp.json()["detail"]
+        assert detail["error_type"] == "call_failed"
+        assert "unreachable" in detail["message"]
+    finally:
+        ws_manager_module.ws_manager.request_action_and_wait = original
+
+
+@pytest.mark.asyncio
+async def test_control_502_legacy_plugin_without_error_type(client, user_with_instance):
+    """Old plugin doesn't send error_type → backend defaults to call_failed → 502.
+
+    Backward-compat: existing HA plugin versions out there still
+    produce a useful 502, just without the structured detail.
+    """
+    from app.ws import manager as ws_manager_module
+
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    async def fake(token, msg, *, timeout=5.0):
+        # Note: NO error_type field — simulate pre-fix plugin
+        return {
+            "type": "device_action_result",
+            "request_id": msg["request_id"],
+            "ok": False,
             "error": "service light.turn_off not found",
             "state": None,
             "attributes": {},
@@ -560,7 +648,62 @@ async def test_control_502_when_plugin_reports_failure(client, user_with_instanc
             headers={**h, "Content-Type": "application/json"},
             json={"domain": "light", "service": "turn_off", "data": {}},
         )
-        assert resp.status_code == 502
-        assert "service light.turn_off not found" in resp.json()["detail"]
+        # Still 502 (backward compat)
+        assert resp.status_code == 502, resp.text
+        detail = resp.json()["detail"]
+        assert detail["error_type"] == "call_failed"
+        assert "not found" in detail["message"]
+    finally:
+        ws_manager_module.ws_manager.request_action_and_wait = original
+
+
+@pytest.mark.asyncio
+async def test_control_503_504_have_structured_detail(client, user_with_instance):
+    """503/504 paths also use structured detail now."""
+    from app.ws import manager as ws_manager_module
+    import asyncio
+
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    # 503: HA offline
+    async def fake_offline(token, msg, *, timeout=5.0):
+        raise ConnectionError("not connected")
+    original = ws_manager_module.ws_manager.request_action_and_wait
+    ws_manager_module.ws_manager.request_action_and_wait = fake_offline
+    try:
+        resp = await client.post(
+            "/api/devices/light.living_room/action",
+            headers={**h, "Content-Type": "application/json"},
+            json={"domain": "light", "service": "turn_off", "data": {}},
+        )
+        assert resp.status_code == 503
+        detail = resp.json()["detail"]
+        assert detail["error_type"] == "ha_offline"
+        assert "offline" in detail["message"].lower()
+    finally:
+        ws_manager_module.ws_manager.request_action_and_wait = original
+
+    # 504: plugin timeout
+    async def fake_timeout(token, msg, *, timeout=5.0):
+        raise asyncio.TimeoutError()
+    ws_manager_module.ws_manager.request_action_and_wait = fake_timeout
+    try:
+        resp = await client.post(
+            "/api/devices/light.living_room/action",
+            headers={**h, "Content-Type": "application/json"},
+            json={"domain": "light", "service": "turn_off", "data": {}},
+        )
+        assert resp.status_code == 504
+        detail = resp.json()["detail"]
+        assert detail["error_type"] == "ha_timeout"
+        assert "in time" in detail["message"].lower()
     finally:
         ws_manager_module.ws_manager.request_action_and_wait = original

@@ -27,6 +27,7 @@ sys.modules["homeassistant.config_entries"] = config_entries_module
 sys.modules["homeassistant.core"] = core_module
 exceptions_module = types.ModuleType("homeassistant.exceptions")
 exceptions_module.ConfigEntryNotReady = Exception
+exceptions_module.ServiceNotFound = type("ServiceNotFound", (Exception,), {})
 sys.modules["homeassistant.exceptions"] = exceptions_module
 
 # cloud_client also imports from homeassistant.helpers.{device,area,entity}_registry
@@ -267,25 +268,26 @@ async def test_action_result_sent_with_last_state_change_iso():
     print("  ✓ action_result_sent_with_last_state_change_iso")
 
 
-async def test_action_result_failure_returns_ok_false():
-    """If every service-call fallback raises (no service found at all),
-    the plugin must still send a result so the cloud's awaiter
-    doesn't time out.
+async def test_action_result_service_not_found_classified():
+    """ServiceNotFound from HA → ok=False + error_type=service_not_found.
+
+    This is the most important mapping: the cloud uses error_type to
+    decide between 400 (caller error) and 502 (gateway error).
     """
+    from homeassistant.exceptions import ServiceNotFound
     hass = make_hass()
     hass.states = MockStates([])
     client = CloudClient(hass, "http://example.com", "test_token")
     client.ws = AsyncMock()
-    # Always raise ServiceNotFound so every fallback fails
     hass.services.async_call = AsyncMock(
-        side_effect=_ServiceNotFound("not found")
+        side_effect=ServiceNotFound("light.not_a_service not found")
     )
 
     await client._handle_message({
         "type": "device_action",
-        "request_id": "req-fail",
+        "request_id": "req-notfound",
         "domain": "light",
-        "service": "turn_on",
+        "service": "not_a_service",
         "entity_id": "light.x",
         "data": {},
     })
@@ -293,10 +295,81 @@ async def test_action_result_failure_returns_ok_false():
     client.ws.send.assert_awaited_once()
     sent = json.loads(client.ws.send.call_args[0][0])
     assert sent["type"] == "device_action_result"
-    assert sent["request_id"] == "req-fail"
+    assert sent["request_id"] == "req-notfound"
     assert sent["ok"] is False
-    assert "no service" in sent["error"].lower() or "not found" in sent["error"].lower()
-    print("  ✓ action_result_failure_returns_ok_false")
+    assert sent["error_type"] == "service_not_found"
+    assert "not_a_service" in sent["error"]
+    # No silent fallback attempted — only one attempt log line
+    print("  ✓ action_result_service_not_found_classified")
+
+
+async def test_action_result_other_exception_classified_as_call_failed():
+    """Non-ServiceNotFound exceptions → error_type=call_failed.
+
+    Keeps the old 502 (gateway error) path intact.
+    """
+    hass = make_hass()
+    hass.states = MockStates([])
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client.ws = AsyncMock()
+    hass.services.async_call = AsyncMock(
+        side_effect=RuntimeError("device is unreachable")
+    )
+
+    await client._handle_message({
+        "type": "device_action",
+        "request_id": "req-callfail",
+        "domain": "light",
+        "service": "turn_on",
+        "entity_id": "light.x",
+        "data": {},
+    })
+
+    sent = json.loads(client.ws.send.call_args[0][0])
+    assert sent["ok"] is False
+    assert sent["error_type"] == "call_failed"
+    assert "unreachable" in sent["error"]
+    print("  ✓ action_result_other_exception_classified_as_call_failed")
+
+
+async def test_action_no_silent_fallback_for_invalid_service():
+    """Calling an invalid service must NOT silently run toggle/turn_on/turn_off.
+
+    Regression for the bug where
+        light.set_brightness → ServiceNotFound
+    would cascade to:
+        light.homeassistant.toggle  (wrong domain/service, dead code,
+                                    but if it ever succeeded the user
+                                    would silently get "toggle" instead
+                                    of the requested brightness change)
+    """
+    from homeassistant.exceptions import ServiceNotFound
+    hass = make_hass()
+    hass.states = MockStates([])
+    client = CloudClient(hass, "http://example.com", "test_token")
+    client.ws = AsyncMock()
+    call_count = {"n": 0}
+    async def counting(*args, **kwargs):
+        call_count["n"] += 1
+        raise ServiceNotFound("light.set_brightness not found")
+    hass.services.async_call = counting
+
+    await client._handle_message({
+        "type": "device_action",
+        "request_id": "req-no-fallback",
+        "domain": "light",
+        "service": "set_brightness",
+        "entity_id": "light.x",
+        "data": {"brightness": 50},
+    })
+
+    # CRITICAL: must be 1, not 4 (no fallback chain)
+    assert call_count["n"] == 1, (
+        f"expected exactly 1 service call (no fallback), got {call_count['n']}"
+    )
+    sent = json.loads(client.ws.send.call_args[0][0])
+    assert sent["error_type"] == "service_not_found"
+    print("  ✓ action_no_silent_fallback_for_invalid_service")
 
 
 async def test_action_without_request_id_sends_no_result():
@@ -627,7 +700,9 @@ async def run_async_tests():
     await test_automation_and_script_domains_always_filtered()
     await test_action_result_sent_with_new_state()
     await test_action_result_sent_with_last_state_change_iso()
-    await test_action_result_failure_returns_ok_false()
+    await test_action_result_service_not_found_classified()
+    await test_action_result_other_exception_classified_as_call_failed()
+    await test_action_no_silent_fallback_for_invalid_service()
     await test_action_without_request_id_sends_no_result()
 
 

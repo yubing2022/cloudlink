@@ -185,7 +185,7 @@ async def control_device(
     except ConnectionError:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "HA instance is offline",
+            {"error_type": "ha_offline", "message": "HA instance is offline"},
         )
     except asyncio.TimeoutError:
         # Plugin didn't reply in 5s. The action may or may not have
@@ -193,16 +193,45 @@ async def control_device(
         # clients can decide whether to retry.
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT,
-            "HA did not report action result in time",
+            {
+                "error_type": "ha_timeout",
+                "message": "HA did not report action result in time",
+            },
         )
 
     if not result.get("ok", False):
-        # The plugin's service call itself failed. Pass the error
-        # through so the caller can show it.
+        # The plugin's service call itself failed. Map by error_type
+        # so the client gets a proper caller error (400) vs gateway
+        # error (502). error_type is mandatory-ish in new plugins; old
+        # plugins that don't send it default to "call_failed".
+        error_type = result.get("error_type", "call_failed")
         err = result.get("error", "HA service call failed")
+        if error_type == "service_not_found":
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                {
+                    "error_type": "service_not_found",
+                    "message": err,
+                    "entity_id": entity_id,
+                },
+            )
+        if error_type == "invalid_params":
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                {
+                    "error_type": "invalid_params",
+                    "message": err,
+                    "entity_id": entity_id,
+                },
+            )
+        # default: call_failed or missing error_type → 502
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
-            f"HA service call failed: {err}",
+            {
+                "error_type": "call_failed",
+                "message": err,
+                "entity_id": entity_id,
+            },
         )
 
     return {

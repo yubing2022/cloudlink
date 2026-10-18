@@ -28,6 +28,7 @@ from homeassistant.core import Event, HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
+from homeassistant.exceptions import ServiceNotFound
 from websockets.exceptions import ConnectionClosed
 
 from .const import (
@@ -407,12 +408,17 @@ class CloudClient:
         POST /action response, instead of clients racing to read
         /state before the next state_change round-trip lands.
 
-        Falls back through several strategies if the primary service is
-        not found:
-          1. As requested (e.g., domain.toggle)
-          2. For button domain: button.press
-          3. Generic homeassistant.toggle (works for most domains)
-          4. homeassistant.turn_on / turn_off
+        NO FALLBACK CHAIN. Earlier versions tried
+        `homeassistant.toggle` / `turn_on` / `turn_off` as fallbacks,
+        but the plugin always passed the entity's own domain to
+        `async_call`, so HA actually received nonsense calls like
+        `light.homeassistant.toggle` — those are dead code. Worse,
+        if HA's lenient mode ever did execute such a call, the
+        caller would silently get a different action than they
+        asked for (e.g. "set brightness" silently turning the light
+        on). Better to fail loudly with `error_type=service_not_found`
+        and let the cloud map that to HTTP 400 so the caller knows
+        to fix their request.
         """
         request_id = msg.get("request_id")
         domain = msg.get("domain")
@@ -424,6 +430,7 @@ class CloudClient:
             _LOGGER.warning("CloudLink: incomplete action: %s", msg)
             await self._send_action_result(
                 request_id, entity_id or "", ok=False,
+                error_type="invalid_params",
                 error="incomplete action (missing domain/service/entity_id)",
             )
             return
@@ -431,50 +438,43 @@ class CloudClient:
         if "entity_id" not in data:
             data["entity_id"] = entity_id
 
-        # Build fallback chain
-        attempts = [(service, data)]
-        if domain == "button" and service != "press":
-            attempts.append(("press", dict(data)))
-        attempts.append(("homeassistant.toggle", {"entity_id": entity_id}))
-        if service != "turn_on":
-            attempts.append(("homeassistant.turn_on", {"entity_id": entity_id}))
-        if service != "turn_off":
-            attempts.append(("homeassistant.turn_off", {"entity_id": entity_id}))
-
-        for svc, d in attempts:
-            _LOGGER.warning("CloudLink: attempting %s.%s on %s", domain, svc, entity_id)
-            try:
-                # blocking=True: wait for HA to actually apply the
-                # service call before returning. For turn_off this is
-                # typically <500ms; for set_temperature it can be a
-                # few seconds (HA waits for the climate device to
-                # ack). Either way, when this returns, hass.states
-                # has the new state.
-                await self.hass.services.async_call(
-                    domain, svc, d, blocking=True,
-                )
-                _LOGGER.warning("CloudLink: OK %s.%s on %s", domain, svc, entity_id)
-                await self._send_action_result_after_call(
-                    request_id, entity_id, ok=True, error=None,
-                )
-                return
-            except Exception as e:
-                err = str(e).lower()
-                if "not found" in err or "servicenotfound" in err:
-                    _LOGGER.warning("CloudLink: %s.%s not available, trying next", domain, svc)
-                    continue
-                _LOGGER.exception("CloudLink: %s.%s failed (non-recoverable)", domain, svc)
-                await self._send_action_result(
-                    request_id, entity_id, ok=False,
-                    error=str(e) or "service call failed",
-                )
-                return
-
-        _LOGGER.warning("CloudLink: all attempts failed for %s (entity: %s)", domain, entity_id)
-        await self._send_action_result(
-            request_id, entity_id, ok=False,
-            error="no service available for this entity",
-        )
+        _LOGGER.warning("CloudLink: attempting %s.%s on %s", domain, service, entity_id)
+        try:
+            # blocking=True: wait for HA to actually apply the service
+            # call before returning. When this returns, hass.states has
+            # the new state. Without blocking we'd race the state
+            # propagation to the cloud.
+            await self.hass.services.async_call(
+                domain, service, data, blocking=True,
+            )
+            _LOGGER.warning("CloudLink: OK %s.%s on %s", domain, service, entity_id)
+            await self._send_action_result_after_call(
+                request_id, entity_id, ok=True, error=None,
+            )
+        except ServiceNotFound as e:
+            # Service really doesn't exist (or wrong domain). Surface
+            # this as service_not_found so the cloud returns HTTP 400
+            # (caller error) instead of HTTP 502 (gateway error).
+            _LOGGER.warning(
+                "CloudLink: %s.%s not found: %s",
+                domain, service, e,
+            )
+            await self._send_action_result(
+                request_id, entity_id, ok=False,
+                error_type="service_not_found",
+                error=str(e) or f"{domain}.{service} not registered",
+            )
+        except Exception as e:
+            # Any other failure: service call ran but raised (bad data,
+            # device offline, auth, etc). Treat as gateway-level failure.
+            _LOGGER.exception(
+                "CloudLink: %s.%s failed (non-recoverable)", domain, service,
+            )
+            await self._send_action_result(
+                request_id, entity_id, ok=False,
+                error_type="call_failed",
+                error=str(e) or "service call failed",
+            )
 
     async def _send_action_result_after_call(
         self,
@@ -526,11 +526,18 @@ class CloudClient:
         *,
         ok: bool,
         error: str | None,
+        error_type: str = "call_failed",
         state: str | None = None,
         attributes: dict | None = None,
         last_state_change: str | None = None,
     ) -> None:
-        """Low-level WS send for a device_action_result message."""
+        """Low-level WS send for a device_action_result message.
+
+        `error_type` lets the cloud distinguish the failure mode
+        (service_not_found → HTTP 400, call_failed → HTTP 502, etc).
+        Default is "call_failed" so any caller that doesn't yet
+        know about this field still gets a sensible mapping.
+        """
         if not request_id:
             # Cloud didn't tag the action with a request_id (e.g. very
             # old caller). Nothing to reply to; the result is
@@ -547,6 +554,7 @@ class CloudClient:
             "request_id": request_id,
             "entity_id": entity_id,
             "ok": ok,
+            "error_type": error_type,
             "error": error,
             "state": state,
             "attributes": attributes or {},
