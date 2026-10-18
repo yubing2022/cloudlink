@@ -289,12 +289,12 @@ f"Domain mismatch: device is {device.domain}, request says {body.domain}",
 
 ### 4.3 `error_type` 与 `message` 必须语义一致
 
-后端 404 路径有 3 处：
+后端 404 路径有 3 处，**全部按 `entity_id` 查 `DeviceEntity`**，所以语义统一为 `entity_not_found`：
 - `get_device_state` 404 → `error_type=entity_not_found`，`message="Entity not found"`
-- `get_device` 404 → `error_type=device_not_found`，`message="Device not found"`
-- `control_device` 404 → `error_type=device_not_found`，`message="Device not found"`
+- `get_device` 404 → `error_type=entity_not_found`，`message="Entity not found"`
+- `control_device` 404 → `error_type=entity_not_found`，`message="Entity not found"`
 
-**改了其中一个 message 但忘了改对应 error_type，就会自相矛盾**——APK 看到 `error_type=device_not_found` 配 `message="Entity not found"` 会困惑。所有 4 处 detail 都通过 `_error()` 构造（`backend/app/api/devices.py:23-34`），保持它作为单一来源。
+**改了其中一个 message 但忘了改对应 error_type，就会自相矛盾**——APK 看到 `error_type=device_not_found` 配 `message="Entity not found"` 会困惑（`99b9fd7` 就是这么翻的车）。所有 4 处 detail 都通过 `_error()` 构造（`backend/app/api/devices.py:21-36`），保持它作为单一来源。
 
 ### 4.4 四个目录都在维护范围内
 
@@ -498,13 +498,20 @@ workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
 | HTTP | `error_type` | message 前缀 | APK 侧错误码 |
 |---|---|---|---|
 | 404 | `entity_not_found` | `Entity not found` | `ENTITY_NOT_FOUND` |
-| 404 | `device_not_found` | `Device not found` | `ENTITY_NOT_FOUND` |
 | 400 | `domain_mismatch` | `Domain mismatch: device is ` | `DOMAIN_MISMATCH` |
 | 400 | `service_not_found` | `Action <domain>.<service> not found` | `SERVICE_NOT_FOUND` |
 | 400 | `invalid_params` | — | `INVALID_PARAMS` |
 | 502 | `call_failed` | — | `SERVICE_CALL_FAILED` |
 | 503 | `ha_offline` | — | `HA_UNAVAILABLE` |
 | 504 | `ha_timeout` | — | `HA_TIMEOUT` |
+
+APK 侧还有 3 个**不来自 HTTP** 的错误码，判定完全在 `CloudLinkCapabilityService.kt` 内完成，后端不参与：
+
+| APK 错误码 | 触发条件 | 为什么必须在 APK 侧判 |
+|---|---|---|
+| `INVALID_FILTER` | `device.list` 的 `area`/`domain` 过滤值在该账号下不存在（或组合结果为空） | 过滤是客户端做的；旧行为返回空列表，调用方会把拼写错误当成"这个房间没设备" |
+| `DEVICE_OFFLINE` | `control` 成功后读回 `state=unavailable` | HA 对离线实体的 service 调用**不报错也不生效**，插件拿不到异常，只有看状态才知道 |
+| `INVALID_PARAMS` | `data` 不是 JSON object（如传了 `"brightness=50"`）、缺必填参数 | 旧实现用 `optJSONObject` 读，字符串会被静默丢成空 data，然后"成功" |
 
 `detail` 统一是 `{"error_type": ..., "message": ..., "entity_id"?: ...}`，由 `devices.py` 的 `_error()` 单一构造。**新加错误分支必须走 `_error()`**，不要手写 `HTTPException(400, "字符串")`——那会让 APK 拿到字符串 shape，只能落到兜底逻辑。
 
@@ -521,8 +528,9 @@ workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
 
 - `68fb8d9` action 错误语义（service_not_found / call_failed / ha_offline / ha_timeout）——首次把 detail 结构化
 - `701b832` 404 的 detail 从字符串改成 dict
-- `99b9fd7` 把 404 的 message 改成 `Entity not found` 却没改 `error_type=device_not_found` → **类型和文案自相矛盾**，`988a5cd` 回退
+- `99b9fd7` 把 404 的 message 改成 `Entity not found` 却没改 `error_type=device_not_found` → **类型和文案自相矛盾**，`988a5cd` 回退；最终在 `entity_not_found` 上把两边统一
 - `80aea8f` capability 的 `getState` 原来用 `runCatching{}` 吞掉一切异常，导致 500 被误报成 `ENTITY_NOT_FOUND`；改成只有 404/405 才降级拉全量列表
+- 2026-10-18 审计（Agent 视角）修掉的三个"静默失败"：离线设备控制返回成功、`data` 传字符串被吞、过滤值写错返回空列表。这三个的共同点不是"报错文案不好"，而是**不报错**——调用方拿到的是与事实相反的结论
 
 这条线上的教训只有一条：**`error_type` 和 `message` 是两个字段，必须同时改、语义一致。**
 

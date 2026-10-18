@@ -135,7 +135,7 @@ async def get_device(
     )
     ent = (await db.execute(stmt)).scalar_one_or_none()
     if not ent:
-        raise _error(status.HTTP_404_NOT_FOUND, "device_not_found", "Device not found", entity_id)
+        raise _error(status.HTTP_404_NOT_FOUND, "entity_not_found", "Entity not found", entity_id)
     if ent.device:
         return ent.device
     # Orphan entity - wrap as a plain Pydantic model so it doesn't get
@@ -167,7 +167,7 @@ async def control_device(
     )
     row = (await db.execute(stmt)).first()
     if not row:
-        raise _error(status.HTTP_404_NOT_FOUND, "device_not_found", "Device not found", entity_id)
+        raise _error(status.HTTP_404_NOT_FOUND, "entity_not_found", "Entity not found", entity_id)
     device, instance = row
 
     if body.domain and body.domain != device.domain:

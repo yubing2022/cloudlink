@@ -394,7 +394,7 @@ async def test_list_devices_unchanged(client, user_with_instance):
 @pytest.mark.asyncio
 async def test_get_device_not_found_structured(client, user_with_instance):
     """GET /api/devices/{entity_id} on a non-existent entity returns
-    the structured 404 shape (error_type=device_not_found)."""
+    the structured 404 shape (error_type=entity_not_found)."""
     await client.post("/api/auth/register", json={
         "email": user_with_instance.email,
         "password": "password123",
@@ -409,8 +409,8 @@ async def test_get_device_not_found_structured(client, user_with_instance):
     assert resp.status_code == 404
     assert resp.json() == {
         "detail": {
-            "error_type": "device_not_found",
-            "message": "Device not found",
+            "error_type": "entity_not_found",
+            "message": "Entity not found",
             "entity_id": "light.no_such_device",
         }
     }
@@ -419,7 +419,7 @@ async def test_get_device_not_found_structured(client, user_with_instance):
 @pytest.mark.asyncio
 async def test_control_device_not_found_structured(client, user_with_instance):
     """POST /action on a non-existent entity returns structured 404
-    (error_type=device_not_found). Closes the gap where only the
+    (error_type=entity_not_found). Closes the gap where only the
     status code was previously asserted."""
     await client.post("/api/auth/register", json={
         "email": user_with_instance.email,
@@ -439,8 +439,8 @@ async def test_control_device_not_found_structured(client, user_with_instance):
     assert resp.status_code == 404
     assert resp.json() == {
         "detail": {
-            "error_type": "device_not_found",
-            "message": "Device not found",
+            "error_type": "entity_not_found",
+            "message": "Entity not found",
             "entity_id": "light.does_not_exist",
         }
     }
