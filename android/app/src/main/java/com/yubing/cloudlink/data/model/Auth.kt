@@ -1,0 +1,28 @@
+package com.yubing.cloudlink.data.model
+
+import com.squareup.moshi.JsonClass
+
+@JsonClass(generateAdapter = true)
+data class LoginRequest(
+    val email: String,
+    val password: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class RegisterRequest(
+    val email: String,
+    val password: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class TokenResponse(
+    val access_token: String,
+    val refresh_token: String,
+    val token_type: String = "bearer",
+)
+
+
+@JsonClass(generateAdapter = true)
+data class RefreshRequest(
+    val refresh_token: String,
+)

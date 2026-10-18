@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "com.yourname.cloudlink"
+    namespace = "com.yubing.cloudlink"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.yourname.cloudlink"
+        applicationId = "com.yubing.cloudlink"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -29,7 +29,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        // AgentBridge capability contract (IAgentBridgeFunction.aidl)
+        aidl = true
+    }
 }
 
 dependencies {

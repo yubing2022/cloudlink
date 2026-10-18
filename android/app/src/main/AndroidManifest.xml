@@ -21,5 +21,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- AgentBridge capability provider (ADR-0114 passive model).
+             AgentBridgeClient scans this action on startup and binds the service
+             to discover cloudlink.device.* capabilities. Reuses the same login
+             session / network stack as the UI above. -->
+        <service
+            android:name=".capability.CloudLinkCapabilityService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.agentbridge.sdk.ACTION_CAPABILITY_PROVIDER" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>
