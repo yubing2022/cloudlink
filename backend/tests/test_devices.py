@@ -410,7 +410,7 @@ async def test_get_device_not_found_structured(client, user_with_instance):
     assert resp.json() == {
         "detail": {
             "error_type": "device_not_found",
-            "message": "Entity not found",
+            "message": "Device not found",
             "entity_id": "light.no_such_device",
         }
     }
@@ -440,7 +440,7 @@ async def test_control_device_not_found_structured(client, user_with_instance):
     assert resp.json() == {
         "detail": {
             "error_type": "device_not_found",
-            "message": "Entity not found",
+            "message": "Device not found",
             "entity_id": "light.does_not_exist",
         }
     }
