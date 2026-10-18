@@ -1,0 +1,538 @@
+# 后端代码部署与维护指南
+
+> 写给接手的另一个 AI 编码工具（也是给将来读这份文档的人）。
+> 包含：架构概览、**部署流程（重点）**、测试方法、硬约束、常见操作、协调协议。
+
+## 0. 30 秒 TL;DR
+
+后端跑在阿里云 ECS `i-bp17ymd3baklc58tzbth`（`118.31.225.109:8000`），用 `workbench` CLI 通过 OSS 中转部署。**改代码 → 5 步命令 → ECS 容器重启**。详细步骤看第 3 节。
+
+```bash
+# 本地写完代码 → 本地测试 → push
+cd /Users/guoyubing/Codex/cloudlink/backend
+python3 -m pytest tests/test_devices.py -q       # 必须全绿
+cd .. && git add <files> && git commit -m "..." && git push origin main
+
+# 部署到 ECS（5 步，30 秒内完成）
+workbench upload <local_file> /opt/cloudlink/backend/<path> --instance-id i-bp17ymd3baklc58tzbth --force
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "docker cp /opt/cloudlink/backend/<path> cloudlink-backend:/app/<path> && docker exec cloudlink-backend find /app/app -name __pycache__ -type d -exec rm -rf {} + && docker restart cloudlink-backend"
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "curl -s -o /dev/null -w 'health HTTP %{http_code}\\n' http://localhost:8000/health"
+```
+
+如果你只能记住 3 件事：(1) 永远删 `__pycache__` 再重启；(2) `Domain mismatch: device is ` 这串字符是已装机 APK 的兜底，**别动**；(3) 跟 APK AI 的协议看第 7 节。
+
+---
+
+## 1. 架构与拓扑
+
+### 1.1 服务栈（ECS 上的容器）
+
+```
+nginx (cloudlink-nginx, :80, :443)
+  └─ /etc/nginx/nginx.conf → /app (cloudlink-backend) 端口 8000
+cloudlink-backend (FastAPI + uvicorn, :8000)
+  └─ cloudlink-postgres (PostgreSQL 15, 内部网络, 无对外端口)
+  └─ cloudlink-redis    (Redis 7, 内部网络)
+```
+
+后端镜像构建自 `backend/Dockerfile`，**代码是 baked into the image**。`docker-compose.yml` 把 `app/`、`alembic/`、`alembic.ini` 拷进镜像。所以"改代码"等于"重建镜像 + 重启容器"——但目前我们的部署流程**不做镜像重建**，而是直接 `docker cp` 把单文件覆盖到运行中的容器里。
+
+### 1.2 角色与本机环境
+
+- **Mac（guoyubing 的本机）**：日常开发在这里。`/Users/guoyubing/Codex/cloudlink/` 是工作区。`git` 在这里跑。
+- **`workbench` CLI** (`/usr/local/bin/workbench`)：阿里云提供的免 SSH 直连 ECS 工具，通过 OSS 中转文件 + 调 ECS API 执行命令。比 SSH 简单，比 SSH 慢。
+- **ECS (`i-bp17ymd3baklc58tzbth`, `118.31.225.109:8000`)**：线上后端。
+- **HA 实例** (`192.168.3.143`)：家里树莓派，HA 跑在这里。cloudlink 集成通过 WSS 连 ECS。
+- **APK / Android 手机**：用户手机，装 AgentBridge capability 客户端。
+
+### 1.3 代码与配置布局
+
+| 路径 | 说明 |
+|---|---|
+| `/Users/guoyubing/Codex/cloudlink/backend/` | 后端代码（git 仓库根下的 `backend/`） |
+| `/opt/cloudlink/backend/` | ECS 上 `docker-compose.yml` 的工作目录，**代码是 backend 镜像构建时拷进来的副本** |
+| `cloudlink-backend` 容器内 `/app/` | 容器里后端的运行时工作目录（也是 baked in） |
+| `cloudlink-postgres` 容器内 `/var/lib/postgresql/data` | 数据库持久化卷 |
+| `~/.codex/attachments/.../pasted-text.txt` 等 | 用户在 Codex 里粘的日志/报错，做调查用 |
+
+---
+
+## 2. 部署流程（**这一节是重点**）
+
+### 2.1 完整流程
+
+1. **本地改代码 + 跑测试**
+   ```bash
+   cd /Users/guoyubing/Codex/cloudlink/backend
+   # 改 app/api/xxx.py 或 app/ws/yyy.py 等
+   python3 -m pytest tests/ -q       # 至少 tests/test_devices.py 必跑
+   ```
+
+2. **commit + push**
+   ```bash
+   cd /Users/guoyubing/Codex/cloudlink
+   git add backend/...
+   git diff --cached --stat          # 自检：只动了 backend/，没意外带入 android/ 或 ha-plugin/
+   git commit -m "..."
+   git push origin main
+   ```
+
+3. **用 workbench 上传文件到 ECS 上的副本**
+   ```bash
+   workbench upload <local_file> /opt/cloudlink/backend/<path> \
+     --instance-id i-bp17ymd3baklc58tzbth --force
+   ```
+   - `<local_file>` 是 Mac 上的绝对路径，比如 `/Users/guoyubing/Codex/cloudlink/backend/app/api/devices.py`
+   - `<path>` 是 ECS 上 `/opt/cloudlink/backend/` 之后的相对路径，比如 `app/api/devices.py`
+   - `--force` 覆盖已存在的文件
+
+4. **用 `docker cp` 覆盖到运行中的容器里 + 清 `__pycache__` + 重启**
+   ```bash
+   workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
+     docker cp /opt/cloudlink/backend/<path> cloudlink-backend:/app/<path> &&
+     docker exec cloudlink-backend find /app/app -name __pycache__ -type d -exec rm -rf {} + &&
+     docker restart cloudlink-backend
+   "
+   ```
+   - **删 `__pycache__` 是必须的**——容器里如果缓存了旧字节码，新文件可能不被加载
+   - `docker restart` 让 uvicorn 重新读代码（约 5-10s）
+
+5. **健康检查**
+   ```bash
+   workbench exec --instance-id i-bp17ymd3baklc58tzbth \
+     --command "curl -s -o /dev/null -w 'health HTTP %{http_code}\\n' http://localhost:8000/health"
+   ```
+   - 必须 `HTTP 200`。如果不是，看 `docker logs --tail 50 cloudlink-backend` 排查
+
+### 2.2 完整一行（实操里基本都用这个）
+
+```bash
+# 假设刚改完 backend/app/api/devices.py
+workbench upload /Users/guoyubing/Codex/cloudlink/backend/app/api/devices.py \
+  /opt/cloudlink/backend/app/api/devices.py --instance-id i-bp17ymd3baklc58tzbth --force && \
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command \
+  "docker cp /opt/cloudlink/backend/app/api/devices.py cloudlink-backend:/app/app/api/devices.py && docker exec cloudlink-backend find /app/app -name __pycache__ -type d -exec rm -rf {} + && docker restart cloudlink-backend" && \
+sleep 6 && \
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "curl -s -o /dev/null -w 'health HTTP %{http_code}\\n' http://localhost:8000/health"
+```
+
+### 2.3 多文件改动
+
+可以批量上传，单条 `workbench exec` 一次性 cp 多个文件。例：
+
+```bash
+workbench upload /Users/guoyubing/Codex/cloudlink/backend/app/api/devices.py \
+  /opt/cloudlink/backend/app/api/devices.py --instance-id i-bp17ymd3baklc58tzbth --force
+workbench upload /Users/guoyubing/Codex/cloudlink/backend/app/api/ws.py \
+  /opt/cloudlink/backend/app/api/ws.py --instance-id i-bp17ymd3baklc58tzbth --force
+workbench upload /Users/guoyubing/Codex/cloudlink/backend/app/ws/manager.py \
+  /opt/cloudlink/backend/app/ws/manager.py --instance-id i-bp17ymd3baklc58tzbth --force
+
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
+  docker cp /opt/cloudlink/backend/app/api/devices.py cloudlink-backend:/app/app/api/devices.py
+  docker cp /opt/cloudlink/backend/app/api/ws.py cloudlink-backend:/app/app/api/ws.py
+  docker cp /opt/cloudlink/backend/app/ws/manager.py cloudlink-backend:/app/app/ws/manager.py
+  docker exec cloudlink-backend find /app/app -name __pycache__ -type d -exec rm -rf {} +
+  docker restart cloudlink-backend
+"
+sleep 6
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "curl -s -o /dev/null -w 'health HTTP %{http_code}\\n' http://localhost:8000/health"
+```
+
+### 2.4 配置文件改动（`docker-compose.yml`, `.env.production`, `nginx`, `Dockerfile`）
+
+这些**不**走上面的 `docker cp` 流程。改动后必须重建镜像：
+
+```bash
+cd /Users/guoyubing/Codex/cloudlink/backend
+# 上传新文件到 ECS
+workbench upload docker-compose.yml /opt/cloudlink/backend/docker-compose.yml --instance-id i-bp17ymd3baklc58tzbth --force
+# 重建并重启（注意 build 会拉镜像、慢一点）
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "cd /opt/cloudlink/backend && docker compose --env-file .env.production build backend && docker compose --env-file .env.production up -d"
+```
+
+数据库 schema 变更走 alembic：
+
+```bash
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "cd /opt/cloudlink/backend && docker compose --env-file .env.production exec backend alembic upgrade head"
+```
+
+**当前没有需要重建镜像的改动**——代码改动都在 Python 文件里，全部走 §2.1 流程。
+
+### 2.5 不用 SSH
+
+理论上可以用 SSH 登 ECS（`ssh root@118.31.225.109`），但**走 workbench 更省事**。除非 workbench 挂了，否则别用 SSH。
+
+---
+
+## 3. 怎么写代码 & 测试
+
+### 3.1 项目结构（只列与维护相关的部分）
+
+```
+backend/
+├── app/
+│   ├── main.py                  # FastAPI app 实例
+│   ├── database.py              # SQLAlchemy async engine + get_db 依赖
+│   ├── deps.py                  # get_current_user 等鉴权依赖
+│   ├── config.py                # Settings（pydantic-settings）
+│   ├── api/
+│   │   ├── auth.py              # /api/auth/{register,login,refresh,me}
+│   │   ├── devices.py           # /api/devices/*   ← 这次错误频发的文件
+│   │   ├── ha.py                # /api/ha/*        ← 设备注册、heartbeat、device_sync
+│   │   └── ws.py                # /api/ws/{ha,client}  ← WebSocket handler
+│   ├── ws/
+│   │   └── manager.py           # ConnectionManager + request_action_and_wait
+│   ├── models/                  # SQLAlchemy ORM
+│   │   ├── user.py
+│   │   ├── ha_instance.py
+│   │   └── device.py            # HADevice + DeviceEntity
+│   ├── schemas/                 # Pydantic 请求/响应
+│   ├── core/                    # security (JWT, password) + crypto (Fernet)
+│   └── alembic/                 # 迁移
+├── tests/
+│   ├── conftest.py              # SQLite-in-memory 测试引擎 + 公共 fixture
+│   ├── test_devices.py          # 主测试文件（21 用例）
+│   ├── test_auth.py
+│   └── integration/             # 跑线上 ECS 的脚本（默认目标 http://118.31.225.109）
+├── docker-compose.yml
+├── Dockerfile
+├── .env.production              # ECS 用，**未 git-tracked**，含 JWT_SECRET/FERNET_KEY/DB pwd
+└── pyproject.toml               # 含 dev deps（pytest, ruff, etc.）
+```
+
+### 3.2 测试
+
+```bash
+cd /Users/guoyubing/Codex/cloudlink/backend
+python3 -m pytest tests/test_devices.py -q   # 主回归
+python3 -m pytest tests/ -q                  # 全跑
+```
+
+测试用 **SQLite in-memory**（`tests/conftest.py` 把 `DATABASE_URL` 替换），所以**本地不需要 Postgres**。`test_devices.py` 当前 21 用例全绿。
+
+注意 `tests/integration/test_api.py` 跑的是**真实 ECS**（默认 `http://118.31.225.109`），会做实际的 HTTP 请求——**别在本地无脑跑**。如果要跑，需要：
+- HA 插件已经连上云
+- 后端已经跑新版代码
+- 接受它会创建/删除测试数据
+
+### 3.3 lint / format
+
+```bash
+cd /Users/guoyubing/Codex/cloudlink/backend
+ruff check app/ tests/
+ruff format app/ tests/
+```
+
+（`ruff` 通过 `pip install -e .[dev]` 装。）
+
+---
+
+## 4. 硬约束（**改了会爆**）
+
+### 4.1 `Domain mismatch: device is ` 这串字符
+
+`backend/app/api/devices.py` 的 `control_device` 在 domain 不符时返回：
+
+```python
+f"Domain mismatch: device is {device.domain}, request says {body.domain}",
+```
+
+**已装机的 Android capability**（`com.yubing.cloudlink.capability.CloudLinkCapabilityService.kt::mapHttpError`）在 400 + 缺 `error_type` 的情况下，**fallback 用 `detail.contains("Domain mismatch")` 匹配**。所以这串字符**一个字符都不能动**——改了，已装机 APK 的分类会直接退化成 `INVALID_PARAMS` 而非 `DOMAIN_MISMATCH`。
+
+如果你要加新功能，把这个分支移到 `_error("domain_mismatch", f"Domain mismatch: ...")`（结构化 detail），**保留前缀不变**。
+
+### 4.2 路由顺序
+
+`backend/app/api/devices.py` 的路由声明顺序是固定的：
+
+```python
+@router.get("")                                       # 列表
+@router.get("/{entity_id:path}/state", ...)           # ← 必须在 catch-all 之前
+@router.get("/{entity_id:path}", ...)                 # catch-all
+@router.post("/{entity_id:path}/action", ...)
+```
+
+`{entity_id:path}` 是个贪婪匹配，**会吞掉 `/{id}/state` 路径**。把 `state` 路由放后面的话，`/api/devices/light.x/state` 会被 catch-all 抢走然后报"父设备"而不是 state。**新加路由时检查这个顺序。**
+
+### 4.3 `error_type` 与 `message` 必须语义一致
+
+后端 404 路径有 3 处：
+- `get_device_state` 404 → `error_type=entity_not_found`，`message="Entity not found"`
+- `get_device` 404 → `error_type=device_not_found`，`message="Device not found"`
+- `control_device` 404 → `error_type=device_not_found`，`message="Device not found"`
+
+**改了其中一个 message 但忘了改对应 error_type，就会自相矛盾**——APK 看到 `error_type=device_not_found` 配 `message="Entity not found"` 会困惑。所有 4 处 detail 都通过 `_error()` 构造（`backend/app/api/devices.py:23-34`），保持它作为单一来源。
+
+### 4.4 不在范围内的目录
+
+本次任务范围**只**是 `backend/`。**别动**：
+- `android/` — APK AI 在改
+- `ha-plugin/` — HA 集成代码，部署到 `/config/custom_components/cloudlink/`，不是 ECS
+- `infra/` — 部署相关配置，本次没动
+- `docs/phases/` — 历史 phase 文档
+
+但**可以读**它们以了解系统行为。
+
+### 4.5 工作区里的 untracked 文件
+
+`backend/app/api/devices.py.bak`（2026-10-17 22:21）是上次回退 commit 留下的，**故意保留**（可能是用户的保险）。**别 commit 它，别删它**。
+
+`android/` 下有一大堆 untracked（用户在做 com.yourname → com.yubing 的重构）。**别 git add 它们**——`git add` 时只动 backend/。
+
+---
+
+## 5. 常见操作
+
+### 5.1 改密码来跑测试（重要工具）
+
+线上用户密码不可见（`password_hash` 存在 DB 里）。要登录测试，最方便的是临时把密码设成已知的：
+
+```bash
+# 写个 SQL 脚本到 ECS
+cat > /tmp/set_pw.sql << 'EOF'
+UPDATE users SET password_hash='$pbkdf2-sha256$600000$<salt>$<hash>' WHERE email='guoyubing123@163.com';
+EOF
+```
+
+其中 hash 是用后端的 `hash_password()` 算出来的。**最稳的方式**是用 workbench exec 跑 Python：
+
+```bash
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
+  docker exec cloudlink-backend python -c \"from app.core.security import hash_password; print(hash_password('Cloud@2024'))\"
+"
+# 把输出塞到 SQL 里
+NEW_HASH=$(workbench exec ... --command "docker exec cloudlink-backend python -c \"...\"")
+# 然后 cat > /tmp/set_pw.sql 拼 SQL，docker cp 进去，psql -f 执行
+# 完事之后再用 cat 出来的原 hash 写回去
+```
+
+**永远记得测完把原 hash 写回去**。我每次都把原始 hash 提前抓下来备份：
+
+```bash
+ORIG=$(workbench exec --instance-id i-bp17ymd3baklc58tzbth --command \
+  "docker exec cloudlink-postgres psql -U cloudlink -d cloudlink -At -c \"SELECT password_hash FROM users WHERE email='guoyubing123@163.com';\"")
+# 存到本地一个文件
+echo "$ORIG" > /tmp/_orig_hash.txt
+```
+
+恢复：
+```bash
+# 读出来，写成 SQL，docker cp，psql -f
+```
+
+### 5.2 跑一个完整的"调一次设备 + 读 state" 测试
+
+```bash
+# 设临时密码、登录、打 turn_off、读 state、恢复亮度、恢复密码
+# 完整脚本示例见 /tmp/smoke_test.sh （每次都重新写）
+```
+
+最常用的 4 个验证：
+
+```bash
+# 1. 列表：14 个非空设备
+curl -s -H "Authorization: Bearer $TOKEN" http://118.31.225.109:8000/api/devices | \
+  python3 -c "import json,sys;d=json.load(sys.stdin);print(f'total {len(d)}  empty {sum(1 for x in d if not x[\"entities\"])}')"
+
+# 2. 单个 entity state
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://118.31.225.109:8000/api/devices/light.yeelink_cn_1208334138_mbulb3_s_2/state
+
+# 3. action（控制）
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"domain":"light","service":"turn_off"}' \
+  http://118.31.225.109:8000/api/devices/light.yeelink_cn_1208334138_mbulb3_s_2/action
+
+# 4. 后端日志
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "docker logs --tail 50 cloudlink-backend"
+```
+
+### 5.3 强制 HA plugin 重新 sync
+
+```bash
+# 通过 HA 端 reload 集成（用户家那台 192.168.3.143）
+ssh root@192.168.3.143 "ha core restart"
+# 或只 reload 集成
+ssh root@192.168.3.143 "ha core reload"
+```
+
+注意：reload 集成不会重新执行 device_sync，**只有 `ha core restart`（重启整个 HA core）会触发**。
+
+### 5.4 看 HA plugin 端日志
+
+```bash
+ssh root@192.168.3.143 "ha core logs --lines 200 2>&1 | grep -i cloudlink | tail -30"
+```
+
+### 5.5 看 ECS 后端实时日志
+
+```bash
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "docker logs --tail 100 cloudlink-backend 2>&1 | grep -iE 'device_sync|action|error'"
+```
+
+### 5.6 直查 Postgres
+
+```bash
+# 注意 shell escaping：双层引号，里面的双引号要 escape
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
+  docker exec cloudlink-postgres psql -U cloudlink -d cloudlink -c \"
+    SELECT id, ha_device_id, name, manufacturer, model
+    FROM ha_devices
+    WHERE manufacturer IS NULL OR model IS NULL
+    ORDER BY id;
+  \"
+"
+```
+
+或者用 stdin：
+```bash
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
+  echo \"SELECT * FROM users WHERE id=60;\" | docker exec -i cloudlink-postgres psql -U cloudlink -d cloudlink
+"
+```
+
+### 5.7 看 HA 插件是否连上云（WS）
+
+```bash
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
+  docker logs --tail 200 cloudlink-backend 2>&1 | grep -iE 'HA connected|HA disconnected|device_sync for instance'
+"
+```
+
+`HA connected: p0TPXiQ1...` 表示插件在线。`device_sync for instance N: devices +X ~Y -Z, entities +...` 表示每次 sync 的增量。
+
+---
+
+## 6. 部署前自检清单
+
+部署任何 backend 改动前，按这张表走一遍：
+
+| 检查项 | 命令 | 期望 |
+|---|---|---|
+| 1. pytest 全绿 | `cd backend && python3 -m pytest tests/ -q` | `XX passed, 0 failed` |
+| 2. 没有意外带入未跟踪文件 | `git status --short backend/` | 只能看到 `M` 或 `A`，没有 `??` 残留 |
+| 3. staged 的只有 backend | `git diff --cached --stat` | 路径都在 `backend/` 下 |
+| 4. push 成功 | `git push origin main` | 看到 `To github.com:yubing2022/cloudlink.git` |
+| 5. health check | `curl -s -o /dev/null -w '%{http_code}\n' http://118.31.225.109:8000/health` | `200` |
+| 6. HA 重新连接 | `ha core logs` 看 `WS connected` | 看到一行新的 connected 日志 |
+| 7. 实测 endpoint | curl 3-5 个 endpoint | 状态码 + 响应内容符合预期 |
+
+**没跑第 1 步就不要部署。**后端 Python 改动没测试覆盖 ≈ 一定会出线上事故。
+
+---
+
+## 7. 与 APK AI 的协调协议
+
+你的搭档是另一个 AI 工具，它在改 `android/`，**不会改也不会部署 backend**。但你们共享 `git main` 和同一个 `118.31.225.109:8000`。
+
+### 7.1 你们的边界
+
+- **你（后端 AI）** 改/部署 `backend/`、`infra/`、`docs/`（如果你要）
+- **APK AI** 改/部署 `android/`、`ha-plugin/`（注意 ha-plugin 是部署到 192.168.3.143，不是 ECS）
+- **都不要碰对方的目录**
+
+### 7.2 协议变更时怎么协作
+
+后端任何**会改变 HTTP API 行为**的改动（endpoint 形状、HTTP 状态码、response detail 字段、错误 `error_type`），**必须**先告诉 APK AI，等它把 capability 的 `mapHttpError` 也改好，再部署。
+
+历史上已经踩过的坑（必须避免重蹈）：
+- `68fb8d9` action 错误语义（service_not_found / call_failed / etc.）— 改了 detail 形状
+- `701b832` 404 错误 detail 改成结构化 dict
+- `988a5cd` / `80aea8f` 404 message 文案回退
+- 每次都要 APK 那边同步改 `mapHttpError` 才能上线
+
+### 7.3 协调流程（实际做法）
+
+1. **改 backend 之前**：在 commit message 里说清楚动了什么（endpoints, status codes, error_types）。
+2. **改 backend 之前**：如果是大改，主动 ping 一下 APK AI 那边（这个项目里谁在协调——应该是用户 guoyubing 手动转达）。
+3. **部署之前**：commit 已 push 到 main，APK AI 也有机会看到 diff。
+4. **APK 改完才部署 backend**：如果 APK 那边有未提交的代码会挂在新协议上，就先别部署。
+
+### 7.4 你能影响 APK 端的契约
+
+- `backend/app/api/devices.py` 的 `_error()` helper 是 404 错误的单一来源
+- `backend/app/api/devices.py` 的 `control_device` 决定了 action 路径的所有响应形状
+- `backend/app/ws/manager.py::request_action_and_wait` 决定 action 5s 超时、`request_id` 协议
+
+如果 APK 端的 capability 行为有 bug（比如这次 getState 走 runCatching 把 500 误报成 404），**不要在后端迁就**——告诉 APK AI 改 capability 走 `mapHttpError`。
+
+### 7.5 共享测试
+
+`backend/tests/test_devices.py` 里有 21 个测试用例，覆盖大部分契约。APK AI 改 capability 时，应该参考这些用例（特别是 4xx/5xx 的响应结构）来同步更新 Kotlin 端的 `mapHttpError`。
+
+---
+
+## 8. 故障排查（按出现频率排序）
+
+### 8.1 health check 503 / 502
+
+```bash
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "docker logs --tail 30 cloudlink-backend 2>&1"
+```
+
+常见原因：
+- `__pycache__` 没清（4xx/5xx Python 错误但容器在跑）：按 §2.1 流程重做，**注意 step 4 的 `find ... -name __pycache__ -exec rm`**
+- alembic 没跑：数据库表不存在（`relation "users" does not exist`）→ 跑 `docker compose ... exec backend alembic upgrade head`
+- 配置问题：`.env.production` 的 JWT_SECRET 改过但没重启 → 重新 `docker restart`
+
+### 8.2 HA plugin 连不上 / 一直在 reconnect
+
+```bash
+# 1. 看插件端
+ssh root@192.168.3.143 "ha core logs --lines 200 2>&1 | grep -iE 'cloudlink|connect error' | tail -20"
+
+# 2. 看后端
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "docker logs --tail 100 cloudlink-backend 2>&1 | grep -iE 'HA connected|HA disconnected' | tail -10"
+```
+
+常见原因：
+- HA 那台机器的 DNS/网络问题
+- 防火墙挡住了 WSS（看 `/var/log/ufw.log` 或 `sudo ufw status`）
+- 后端代码引入了 import 错误，连接建立后立刻断开
+
+### 8.3 action 永远 timeout（5s 后 504）
+
+```bash
+workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "docker logs --tail 50 cloudlink-backend 2>&1 | grep -iE 'request_action_and_wait|device_action_result|504'"
+```
+
+如果看到 `device_action_result` 但时间戳对不上 → plugin 在 process 但是慢。
+如果完全没看到 `device_action_result` → plugin 收到但没回，**看 HA 端 `cloudlink._execute_action` 日志**。
+
+### 8.4 部署后没生效
+
+99% 是 `__pycache__`。`docker restart` 不会清字节码缓存，所以**必须**显式 `find ... -name __pycache__ -type d -exec rm -rf {} +`。看到诡异行为先做这步。
+
+### 8.5 `workbench` 卡住 / 超时
+
+```bash
+# 看看 daemon 状态
+workbench daemon status
+# 必要时重启 daemon
+workbench daemon stop
+sleep 3
+nohup workbench daemon start > /tmp/wb.log 2>&1 &
+```
+
+---
+
+## 9. 必读文件清单（如果只能看 5 个文件）
+
+1. `backend/app/api/devices.py` — 80% 的日常改动在这里
+2. `backend/app/ws/manager.py` — WebSocket + 同步请求协议
+3. `backend/app/main.py` — app 实例
+4. `backend/tests/conftest.py` + `backend/tests/test_devices.py` — 21 个测试，看懂怎么 mock
+5. `backend/app/api/ws.py` — WebSocket handler，device_sync / state_change / device_action_result 三种消息
+
+---
+
+## 10. 版本
+
+- 文档基线 commit：`80aea8f`（`fix(capability): getState() should surface backend 404 detail like control()`）
+- 撰写时间：2026-10-18
+- 适用 Python：3.11+（容器内是 python:3.11-slim）
+- FastAPI：≥ 0.115
+- SQLAlchemy：2.x async
+
+更新这份文档时，请在文件头加 commit hash。
