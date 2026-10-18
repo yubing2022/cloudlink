@@ -18,6 +18,24 @@ from app.ws.manager import ws_manager
 router = APIRouter(prefix="/devices", tags=["devices"])
 
 
+def _error(http_status: int, error_type: str, message: str, entity_id: str) -> HTTPException:
+    """Build a structured-detail HTTPException used by every 404/400
+    path under this router.
+
+    All clients should read `detail["error_type"]` first and only fall
+    back to `detail["message"]` substring matching when error_type is
+    missing (legacy code paths). The `message` text is preserved
+    byte-for-byte from the old bare-string variants so the
+    device-installed Android capability's `detail.contains(...)`
+    fallback path keeps working — do not reword any of these strings
+    without first updating that APK.
+    """
+    return HTTPException(
+        http_status,
+        {"error_type": error_type, "message": message, "entity_id": entity_id},
+    )
+
+
 @router.get("", response_model=list[HADeviceSchema])
 async def list_devices(
     user: Annotated[User, Depends(get_current_user)],
@@ -90,7 +108,7 @@ async def get_device_state(
     )
     ent = (await db.execute(stmt)).scalar_one_or_none()
     if not ent:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Entity not found")
+        raise _error(status.HTTP_404_NOT_FOUND, "entity_not_found", "Entity not found", entity_id)
     return ent
 
 
@@ -117,7 +135,7 @@ async def get_device(
     )
     ent = (await db.execute(stmt)).scalar_one_or_none()
     if not ent:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Device not found")
+        raise _error(status.HTTP_404_NOT_FOUND, "device_not_found", "Device not found", entity_id)
     if ent.device:
         return ent.device
     # Orphan entity - wrap as a plain Pydantic model so it doesn't get
@@ -149,13 +167,19 @@ async def control_device(
     )
     row = (await db.execute(stmt)).first()
     if not row:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Device not found")
+        raise _error(status.HTTP_404_NOT_FOUND, "device_not_found", "Device not found", entity_id)
     device, instance = row
 
     if body.domain and body.domain != device.domain:
-        raise HTTPException(
+        # Message text MUST start with "Domain mismatch: device is " —
+        # the device-installed Android capability falls back to
+        # `detail.contains("Domain mismatch")` when error_type is
+        # missing on legacy responses, so don't reword this.
+        raise _error(
             status.HTTP_400_BAD_REQUEST,
+            "domain_mismatch",
             f"Domain mismatch: device is {device.domain}, request says {body.domain}",
+            entity_id,
         )
 
     # Send the action and block until the HA plugin reports the new

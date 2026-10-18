@@ -90,7 +90,13 @@ async def test_get_device_state_empty_attributes(client, user_with_instance):
 
 @pytest.mark.asyncio
 async def test_get_device_state_not_found(client, user_with_instance):
-    """Unknown entity_id → 404 with `Entity not found` (no 403 to avoid leak)."""
+    """Unknown entity_id → 404 with structured detail.
+
+    The detail shape must be exactly the dict, not the legacy bare
+    string, so the Android client can switch on `error_type`. The
+    message text "Entity not found" is preserved byte-for-byte for
+    legacy fallback (`detail.contains("Entity not found")`).
+    """
     await client.post("/api/auth/register", json={
         "email": user_with_instance.email,
         "password": "password123",
@@ -103,7 +109,15 @@ async def test_get_device_state_not_found(client, user_with_instance):
 
     resp = await client.get("/api/devices/light.does_not_exist/state", headers=h)
     assert resp.status_code == 404
-    assert resp.json() == {"detail": "Entity not found"}
+    # Whole-detail equality — anything missing (message / entity_id)
+    # fails this assert, which is exactly what we want.
+    assert resp.json() == {
+        "detail": {
+            "error_type": "entity_not_found",
+            "message": "Entity not found",
+            "entity_id": "light.does_not_exist",
+        }
+    }
 
 
 @pytest.mark.asyncio
@@ -129,9 +143,17 @@ async def test_get_device_state_other_user_hidden(client, user_with_instance):
     h = {"Authorization": f"Bearer {token}"}
 
     # Entity belongs to user_with_instance, not the intruder.
+    # Structured 404 (error_type=entity_not_found); same response as if
+    # the entity didn't exist at all, to avoid leaking existence.
     resp = await client.get("/api/devices/light.living_room/state", headers=h)
     assert resp.status_code == 404
-    assert resp.json() == {"detail": "Entity not found"}
+    assert resp.json() == {
+        "detail": {
+            "error_type": "entity_not_found",
+            "message": "Entity not found",
+            "entity_id": "light.living_room",
+        }
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -367,6 +389,96 @@ async def test_list_devices_unchanged(client, user_with_instance):
         "light.living_room", "sensor.living_room_temp",
     ]
 
+
+
+@pytest.mark.asyncio
+async def test_get_device_not_found_structured(client, user_with_instance):
+    """GET /api/devices/{entity_id} on a non-existent entity returns
+    the structured 404 shape (error_type=device_not_found)."""
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.get("/api/devices/light.no_such_device", headers=h)
+    assert resp.status_code == 404
+    assert resp.json() == {
+        "detail": {
+            "error_type": "device_not_found",
+            "message": "Device not found",
+            "entity_id": "light.no_such_device",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_control_device_not_found_structured(client, user_with_instance):
+    """POST /action on a non-existent entity returns structured 404
+    (error_type=device_not_found). Closes the gap where only the
+    status code was previously asserted."""
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post(
+        "/api/devices/light.does_not_exist/action",
+        headers={**h, "Content-Type": "application/json"},
+        json={"domain": "light", "service": "turn_on", "data": {}},
+    )
+    assert resp.status_code == 404
+    assert resp.json() == {
+        "detail": {
+            "error_type": "device_not_found",
+            "message": "Device not found",
+            "entity_id": "light.does_not_exist",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_control_domain_mismatch_structured(client, user_with_instance):
+    """POST /action with the wrong domain returns structured 400
+    (error_type=domain_mismatch). The message text MUST start with
+    "Domain mismatch: device is " — the device-installed Android
+    capability falls back to `detail.contains("Domain mismatch")` on
+    legacy responses.
+    """
+    await client.post("/api/auth/register", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })
+    token = (await client.post("/api/auth/login", json={
+        "email": user_with_instance.email,
+        "password": "password123",
+    })).json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    # light.living_room's domain is "light"; request says "switch"
+    resp = await client.post(
+        "/api/devices/light.living_room/action",
+        headers={**h, "Content-Type": "application/json"},
+        json={"domain": "switch", "service": "turn_on", "data": {}},
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["error_type"] == "domain_mismatch"
+    assert detail["message"].startswith("Domain mismatch: device is "), (
+        f"message must start with the legacy prefix; got {detail['message']!r}"
+    )
+    # And the full message matches the byte-for-byte original
+    assert detail["message"] == "Domain mismatch: device is light, request says switch"
+    assert detail["entity_id"] == "light.living_room"
 
 
 @pytest.mark.asyncio
