@@ -221,9 +221,12 @@ private fun DeviceCard(
                 DeviceIconLarge(device = device)
             }
             Spacer(Modifier.weight(1f))
-            // Bottom row: action button aligned to the end
+            // Bottom row: action button aligned to the end.
+            // 固定高度：只读设备没有按钮，若不占位这行会塌成 0，卡片比别人矮 40dp。
+            // 注意 fillMaxHeight() 在 lazy grid 里等于 wrap content（约束是无限的），
+            // 所以卡片高度完全由内容决定，必须用固定高度而不是 weight 来对齐。
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().height(QUICK_ACTION_SIZE),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Spacer(Modifier.weight(1f))
@@ -296,7 +299,7 @@ private fun QuickActionButton(
 
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(QUICK_ACTION_SIZE)
             .clip(CircleShape)
             .background(container)
             .clickable { onToggle() },
@@ -306,7 +309,6 @@ private fun QuickActionButton(
             imageVector = icon,
             contentDescription = when (action.kind) {
                 QuickActionKind.MOMENTARY -> "执行"
-                QuickActionKind.POSITION -> if (isActive) "关闭" else "打开"
                 else -> if (isActive) "关闭" else "打开"
             },
             tint = tint,
@@ -314,6 +316,9 @@ private fun QuickActionButton(
         )
     }
 }
+
+/** 快捷按钮的直径，同时也是底部操作行的固定高度。 */
+private val QUICK_ACTION_SIZE = 40.dp
 
 private fun iconFor(device: HomeDevice, primary: Entity?): ImageVector {
     val domain = primary?.domain ?: ""
