@@ -84,12 +84,12 @@ data class HomeDevice(
     val entities: List<Entity> = emptyList(),
     @Json(name = "updated_at") val updatedAt: String? = null,
 ) {
-    /** The "primary" entity is the most useful one to toggle (e.g. switch
-     *  or light for power devices). Used for the quick-action button. */
+    /** The "primary" entity is the one the card's quick-action button
+     *  controls — i.e. the device's main control, not the first entity
+     *  that happens to be switchable. See PrimaryEntity.kt for the rules
+     *  and the real-world cases that motivated them. */
     val primaryEntity: Entity?
-        get() = entities.firstOrNull { e ->
-            e.domain in listOf("light", "switch", "fan", "media_player", "climate")
-        } ?: entities.firstOrNull()
+        get() = primaryEntityFor()
 
     /** Domain → first entity of that domain in this device. */
     fun entityByDomain(domain: String): Entity? =
