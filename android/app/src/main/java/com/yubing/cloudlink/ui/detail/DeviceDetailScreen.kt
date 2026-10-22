@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yubing.cloudlink.data.icon.DeviceIconImage
+import com.yubing.cloudlink.data.icon.categoryIcon
 import com.yubing.cloudlink.data.model.Entity
 import com.yubing.cloudlink.data.model.HomeDevice
 import com.yubing.cloudlink.data.model.quickActionFor
@@ -112,10 +113,13 @@ private fun DeviceHeader(device: HomeDevice) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // Use the device's photo (from miot-spec.com) when available,
-                // otherwise fall back to a generic Material icon.
+                // otherwise fall back to the category icon (printer / camera /
+                // speaker …) so a device without a product photo still reads
+                // as what it is instead of a generic placeholder.
                 DeviceIconImage(
                     model = device.model,
                     size = 56.dp,
+                    fallback = device.categoryIcon(),
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
                 )

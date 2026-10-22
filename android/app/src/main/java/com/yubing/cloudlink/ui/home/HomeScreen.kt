@@ -9,23 +9,12 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AcUnit
-import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.DeviceHub
-import androidx.compose.material.icons.filled.DeviceThermostat
 import androidx.compose.material.icons.filled.ExitToApp
-import androidx.compose.material.icons.filled.Lightbulb
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Router
-import androidx.compose.material.icons.filled.Sensors
-import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.ToggleOn
-import androidx.compose.material.icons.filled.WifiOff
-import androidx.compose.material.icons.filled.WindPower
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,9 +28,12 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yubing.cloudlink.data.icon.DeviceIconImage
+import com.yubing.cloudlink.data.icon.categoryIcon
+import com.yubing.cloudlink.data.model.DeviceCategory
 import com.yubing.cloudlink.data.model.Entity
 import com.yubing.cloudlink.data.model.HomeDevice
 import com.yubing.cloudlink.data.model.QuickActionKind
+import com.yubing.cloudlink.data.model.category
 import com.yubing.cloudlink.data.model.quickActionFor
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -241,7 +233,6 @@ private fun DeviceCard(
 
 @Composable
 private fun DeviceIconLarge(device: HomeDevice) {
-    val primary = device.primaryEntity
     // No background — the icon sits directly on the card surface.
     // The "on" vs "off" distinction is conveyed by the bottom-right
     // action button (filled circle in primaryContainer when on) plus
@@ -250,19 +241,19 @@ private fun DeviceIconLarge(device: HomeDevice) {
         modifier = Modifier.size(64.dp),
         contentAlignment = Alignment.Center,
     ) {
-        val url = device.model  // model e.g. "yeelink.light.mbulb3"
-        if (url.isNullOrBlank()) {
+        val model = device.model  // e.g. "yeelink.light.mbulb3"
+        if (model.isNullOrBlank()) {
             Icon(
-                imageVector = iconFor(device, primary),
+                imageVector = device.categoryIcon(),
                 contentDescription = null,
                 modifier = Modifier.size(40.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
             DeviceIconImage(
-                model = url,
+                model = model,
                 size = 56.dp,
-                fallback = iconFor(device, primary),
+                fallback = device.categoryIcon(),
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
             )
@@ -320,36 +311,6 @@ private fun QuickActionButton(
 /** 快捷按钮的直径，同时也是底部操作行的固定高度。 */
 private val QUICK_ACTION_SIZE = 40.dp
 
-private fun iconFor(device: HomeDevice, primary: Entity?): ImageVector {
-    val domain = primary?.domain ?: ""
-    // Sensor domains don't tell us what is being measured, so the device
-    // name is the best hint. Common Chinese patterns covered below.
-    val name = device.name
-    return when (domain) {
-        "light" -> Icons.Filled.Lightbulb
-        "switch" -> Icons.Filled.ToggleOn
-        "fan" -> Icons.Filled.WindPower
-        "media_player" -> Icons.Filled.Speaker
-        "button" -> Icons.Filled.PlayArrow
-        "cover" -> if (name.contains("窗", ignoreCase = true)) Icons.Filled.WifiOff
-                    else Icons.Filled.Bolt
-        "lock" -> Icons.Filled.Lock
-        "climate" -> Icons.Filled.DeviceThermostat
-        "sensor" -> when {
-            name.contains("温", ignoreCase = true) -> Icons.Filled.DeviceThermostat
-            name.contains("湿", ignoreCase = true) -> Icons.Filled.AcUnit
-            name.contains("电", ignoreCase = true) || name.contains("功率", ignoreCase = true) -> Icons.Filled.Bolt
-            name.contains("打印", ignoreCase = true) -> Icons.Filled.DeviceHub
-            name.contains("备份", ignoreCase = true) -> Icons.Filled.Router
-            else -> Icons.Filled.Sensors
-        }
-        "binary_sensor" -> Icons.Filled.Sensors
-        "humidifier" -> Icons.Filled.AcUnit
-        "vacuum" -> Icons.Filled.WindPower
-        "water_heater" -> Icons.Filled.DeviceThermostat
-        else -> Icons.Filled.DeviceHub
-    }
-}
 
 private fun statusLabel(entity: Entity): String {
     val action = quickActionFor(entity.domain)
