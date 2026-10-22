@@ -78,6 +78,10 @@ fun HomeDevice.category(): DeviceCategory {
 
     if (has("窗帘", "curtain", "blind", "卷帘", "百叶")) return DeviceCategory.COVER
 
+    // 插座靠域判断也能兜住（都带 switch），但一个只暴露 sensor 的计量插座
+    // 会被判成 POWER_SENSOR，所以名字里带"插座"时优先按插座处理。
+    if (has("插座", "排插", "插排", "plug")) return DeviceCategory.PLUG
+
     // —— 2. 实体域 ——
     // 顺序有讲究：能定义「设备是什么」的域排在前面，
     // switch 是附属能力（蓝牙开关、DLNA 开关），放最后。
