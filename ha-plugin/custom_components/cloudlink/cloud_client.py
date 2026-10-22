@@ -23,6 +23,22 @@ def _dumps(obj) -> str:
     """Wrapper that always uses the datetime-aware encoder."""
     return json.dumps(obj, cls=_CloudLinkJSONEncoder)
 
+
+def _reg_str(entry: "er.RegistryEntry | None", field: str) -> "str | None":
+    """Read a string field off an entity-registry entry defensively.
+
+    The registry entry is a dataclass whose field set has changed across
+    HA releases (e.g. entity_category -> categories in 2025.x), so every
+    read here is getattr-guarded: a missing field yields None rather than
+    killing the whole sync.
+    """
+    if entry is None:
+        return None
+    value = getattr(entry, field, None)
+    if isinstance(value, str) and value:
+        return value
+    return None
+
 import websockets
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.helpers import device_registry as dr
@@ -278,6 +294,21 @@ class CloudClient:
                 "attributes": dict(state.attributes),
                 "ha_device_id": ha_device_id,
                 "entity_category": category,
+                # Stable identity + semantic signals from HA's entity
+                # registry. Unlike `name` (which the user can rename at
+                # will) and `attributes.device_class` (which many
+                # integrations never set — see the Huawei plug, whose
+                # three switches all have none), these survive renames
+                # and let the cloud label entities by integration
+                # (platform) and by that integration's own id
+                # (unique_id, which for xiaomi_miot encodes siid/piid)
+                # instead of guessing from a localised display name.
+                "platform": _reg_str(ent_reg_entry, "platform"),
+                "unique_id": _reg_str(ent_reg_entry, "unique_id"),
+                "original_device_class": _reg_str(
+                    ent_reg_entry, "original_device_class",
+                ),
+                "original_name": _reg_str(ent_reg_entry, "original_name"),
             })
 
         # 3. Devices: only keep devices that have at least one entity in

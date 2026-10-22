@@ -1,7 +1,7 @@
 {
   "domain": "cloudlink",
   "name": "CloudLink",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "documentation": "https://github.com/yourname/cloudlink",
   "issue_tracker": "https://github.com/yourname/cloudlink/issues",
   "codeowners": ["@yourname"],
