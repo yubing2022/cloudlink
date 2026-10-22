@@ -22,8 +22,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yubing.cloudlink.data.icon.DeviceIconImage
 import com.yubing.cloudlink.data.model.Entity
 import com.yubing.cloudlink.data.model.HomeDevice
-
-private val ON_STATES = setOf("on", "playing", "home", "open", "unlocked", "active")
+import com.yubing.cloudlink.data.model.quickActionFor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -140,7 +139,7 @@ private fun DeviceHeader(device: HomeDevice) {
                 }
             }
             Spacer(Modifier.height(12.dp))
-            val on = device.entities.count { it.state in ON_STATES }
+            val on = device.entities.count { quickActionFor(it.domain).isOn(it.state) }
             Row(modifier = Modifier.fillMaxWidth()) {
                 StatusPill(label = "实体", value = "${device.entities.size}")
                 Spacer(Modifier.width(8.dp))
@@ -220,7 +219,7 @@ private fun BrightnessSlider(
 ) {
     // The light is "off" right now — disable the slider. We still show it
     // so the user can pre-set brightness for the next turn-on.
-    val isOn = entity.state in LIST_OF_ON
+    val isOn = quickActionFor(entity.domain).isOn(entity.state)
     // currentBrightness is null when the light is off; we hold the last
     // user-set value via the optimistic update in the ViewModel, so this
     // slider position stays put between on→off→on.
@@ -264,7 +263,7 @@ private fun EntityControl(
 ) {
     when (entity.domain) {
         "light" -> {
-            val isOn = entity.state in LIST_OF_ON
+            val isOn = quickActionFor(entity.domain).isOn(entity.state)
             Switch(
                 checked = isOn,
                 onCheckedChange = { turnOn ->
@@ -283,7 +282,7 @@ private fun EntityControl(
             )
         }
         "switch", "fan", "media_player" -> {
-            val isOn = entity.state in LIST_OF_ON
+            val isOn = quickActionFor(entity.domain).isOn(entity.state)
             Switch(
                 checked = isOn,
                 onCheckedChange = { onAction(entity, "toggle") },
@@ -332,7 +331,6 @@ private fun EntityControl(
     }
 }
 
-private val LIST_OF_ON = setOf("on", "playing", "home", "open", "unlocked", "active")
 
 private fun entityIcon(domain: String) = when (domain) {
     "light" -> "💡"
@@ -353,7 +351,7 @@ private fun entityIcon(domain: String) = when (domain) {
 }
 
 private fun stateColor(state: String, domain: String): Color = when {
-    state in LIST_OF_ON -> Color(0xFF2E7D32)
+    quickActionFor(domain).isOn(state) -> Color(0xFF2E7D32)
     state in listOf("off", "idle", "closed", "locked", "inactive") -> Color(0xFF616161)
     else -> Color(0xFFE65100)
 }

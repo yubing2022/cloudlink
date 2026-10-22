@@ -8,6 +8,7 @@ import com.yubing.cloudlink.data.local.TokenStore
 import com.yubing.cloudlink.data.model.DeviceActionRequest
 import com.yubing.cloudlink.data.model.Entity
 import com.yubing.cloudlink.data.model.HomeDevice
+import com.yubing.cloudlink.data.model.quickActionFor
 import com.yubing.cloudlink.data.ws.DeviceEvent
 import com.yubing.cloudlink.data.ws.DeviceWebSocket
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -76,7 +77,10 @@ class DeviceDetailViewModel @Inject constructor(
 
     fun control(entity: Entity, action: String) {
         // Optimistic update
-        applyOptimistic(entity.entity_id, predictedStateFor(entity.entity_id, action))
+        applyOptimistic(entity.entity_id, predictedStateFor(entity, action))
+        // 与首页一致：开灯要带 brightness，否则会恢复上次那个可能是 1 的亮度
+        val qa = quickActionFor(entity.domain)
+        val extra = if (action == qa.turnOnService) qa.turnOnData(entity) else emptyMap()
         viewModelScope.launch {
             try {
                 val token = tokenStore.getAccessToken() ?: return@launch
@@ -84,7 +88,11 @@ class DeviceDetailViewModel @Inject constructor(
                 api.controlDevice(
                     "Bearer $token",
                     entity.entity_id,
-                    DeviceActionRequest(entity.domain, actualAction, mapOf("entity_id" to entity.entity_id)),
+                    DeviceActionRequest(
+                        entity.domain,
+                        actualAction,
+                        mapOf("entity_id" to entity.entity_id) + extra,
+                    ),
                 )
             } catch (_: Exception) {
                 // ignore; WS state_change will update
@@ -137,17 +145,24 @@ class DeviceDetailViewModel @Inject constructor(
         }
     }
 
-    private fun predictedStateFor(entityId: String, action: String): String {
-        if (action == "turn_on" || action == "open") return "on"
-        if (action == "turn_off" || action == "close") return "off"
-        if (action == "press") return ""
-        if (action == "toggle") {
-            val current = _state.value.device?.entities
-                ?.firstOrNull { it.entity_id == entityId }
-                ?.state
-            return if (current in ON_STATES) "off" else "on"
+    private fun predictedStateFor(entity: Entity, action: String): String {
+        val current = _state.value.device?.entities
+            ?.firstOrNull { it.entity_id == entity.entity_id }
+            ?.state
+        return when (action) {
+            "turn_on" -> "on"
+            "turn_off" -> "off"
+            "open_cover", "open_valve" -> "open"
+            "close_cover", "close_valve" -> "closed"
+            "unlock" -> "unlocked"
+            "lock" -> "locked"
+            "press" -> ""
+            "toggle" -> {
+                val isOn = quickActionFor(entity.domain).isOn(current ?: "")
+                if (isOn) "off" else "on"
+            }
+            else -> ""
         }
-        return ""
     }
 
     private fun applyOptimistic(entityId: String, newState: String) {
@@ -183,5 +198,3 @@ class DeviceDetailViewModel @Inject constructor(
         }
     }
 }
-
-private val ON_STATES = setOf("on", "playing", "home", "open", "unlocked", "active")

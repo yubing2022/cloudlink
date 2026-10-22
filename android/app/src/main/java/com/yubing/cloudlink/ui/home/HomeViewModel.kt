@@ -8,6 +8,8 @@ import com.yubing.cloudlink.data.local.TokenStore
 import com.yubing.cloudlink.data.model.DeviceActionRequest
 import com.yubing.cloudlink.data.model.Entity
 import com.yubing.cloudlink.data.model.HomeDevice
+import com.yubing.cloudlink.data.model.QuickActionKind
+import com.yubing.cloudlink.data.model.quickActionFor
 import com.yubing.cloudlink.data.ws.DeviceEvent
 import com.yubing.cloudlink.data.ws.DeviceWebSocket
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,7 +36,6 @@ data class HomeUiState(
     val wsConnected: Boolean = false,
 )
 
-private val ON_STATES = setOf("on", "playing", "home", "open", "unlocked", "active")
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -104,10 +105,10 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun control(entity: Entity, action: String) {
+    fun control(entity: Entity, action: String, extraData: Map<String, Any?> = emptyMap()) {
         // Optimistic UI update so the Switch reflects the action immediately.
         // The WS state_change that follows will confirm or correct.
-        applyOptimisticState(entity.entity_id, predictedStateFor(entity.entity_id, action))
+        applyOptimisticState(entity.entity_id, predictedStateFor(entity, action))
 
         viewModelScope.launch {
             try {
@@ -116,7 +117,11 @@ class HomeViewModel @Inject constructor(
                 api.controlDevice(
                     "Bearer $token",
                     entity.entity_id,
-                    DeviceActionRequest(entity.domain, actualAction, mapOf("entity_id" to entity.entity_id)),
+                    DeviceActionRequest(
+                        entity.domain,
+                        actualAction,
+                        mapOf("entity_id" to entity.entity_id) + extraData,
+                    ),
                 )
             } catch (_: Exception) {
                 // ignore; WS state_change will eventually update UI
@@ -124,8 +129,21 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 首页卡片的快捷按钮。
+     *
+     * 不再对所有域无差别发 `toggle` —— 那会让 sensor 收到 `sensor.toggle`
+     * （后端 service_not_found），也会让空调在 cool 状态下被切成 off。
+     * 具体调哪个 service 由 QuickAction 决策表按域决定。
+     */
     fun togglePrimary(device: HomeDevice) {
-        device.primaryEntity?.let { control(it, "toggle") }
+        val entity = device.primaryEntity ?: return
+        val action = quickActionFor(entity.domain)
+        if (action.kind == QuickActionKind.READ_ONLY) return
+        val service = action.serviceFor(entity.state)
+        // 额外参数只在「开」的方向上带（例如灯的 brightness）
+        val extra = if (service == action.turnOnService) action.turnOnData(entity) else emptyMap()
+        control(entity, service, extra)
     }
 
     fun logout(onDone: () -> Unit) {
@@ -136,18 +154,30 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun predictedStateFor(entityId: String, action: String): String {
-        if (action == "turn_on" || action == "open") return "on"
-        if (action == "turn_off" || action == "close") return "off"
-        if (action == "press") return ""  // buttons have no togglable state
-        if (action == "toggle") {
-            val current = _state.value.devices
-                .flatMap { it.entities }
-                .firstOrNull { it.entity_id == entityId }
-                ?.state
-            return if (current in ON_STATES) "off" else "on"
+    /**
+     * 乐观更新用的状态预测。返回空串表示「无法预测，等 WS 推送」。
+     *
+     * 注意现在首页不再发 `toggle`，这里保留该分支只是因为详情页仍在用。
+     */
+    private fun predictedStateFor(entity: Entity, action: String): String {
+        val current = _state.value.devices
+            .flatMap { it.entities }
+            .firstOrNull { it.entity_id == entity.entity_id }
+            ?.state
+        return when (action) {
+            "turn_on" -> "on"
+            "turn_off" -> "off"
+            "open_cover", "open_valve" -> "open"
+            "close_cover", "close_valve" -> "closed"
+            "unlock" -> "unlocked"
+            "lock" -> "locked"
+            "press" -> ""  // 瞬时动作没有可预测的状态
+            "toggle" -> {
+                val isOn = quickActionFor(entity.domain).isOn(current ?: "")
+                if (isOn) "off" else "on"
+            }
+            else -> ""
         }
-        return ""
     }
 
     private fun applyOptimisticState(entityId: String, newState: String) {

@@ -41,8 +41,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yubing.cloudlink.data.icon.DeviceIconImage
 import com.yubing.cloudlink.data.model.Entity
 import com.yubing.cloudlink.data.model.HomeDevice
-
-private val ON_STATES = setOf("on", "playing", "home", "open", "unlocked", "active")
+import com.yubing.cloudlink.data.model.QuickActionKind
+import com.yubing.cloudlink.data.model.quickActionFor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -267,26 +267,31 @@ private fun DeviceIconLarge(device: HomeDevice) {
     }
 }
 
+/**
+ * 快捷操作按钮。
+ *
+ * 图标**只表达动作**，不表达品类：电源键=开/关切换，拨杆=开合行程，
+ * 播放键=执行一次。只读实体（sensor 等）不渲染按钮 —— 否则点下去发的是
+ * `sensor.toggle`，后端只会回 service_not_found。
+ */
 @Composable
 private fun QuickActionButton(
     primary: Entity?,
     onToggle: () -> Unit,
 ) {
     if (primary == null) return
-    val isOn = primary.state in ON_STATES
-    val icon = when (primary.domain) {
-        "light" -> Icons.Filled.Lightbulb
-        "switch" -> Icons.Filled.ToggleOn
-        "fan" -> Icons.Filled.WindPower
-        "media_player" -> Icons.Filled.PowerSettingsNew
-        "button" -> Icons.Filled.PlayArrow
-        "cover" -> Icons.Filled.Bolt
-        "lock" -> Icons.Filled.Lock
-        else -> Icons.Filled.Bolt
+    val action = quickActionFor(primary.domain)
+    val icon = when (action.kind) {
+        QuickActionKind.TOGGLE -> Icons.Filled.PowerSettingsNew
+        QuickActionKind.POSITION -> Icons.Filled.ToggleOn
+        QuickActionKind.MOMENTARY -> Icons.Filled.PlayArrow
+        QuickActionKind.READ_ONLY -> return
     }
-    val tint = if (isOn) MaterialTheme.colorScheme.primary
+    // 瞬时动作没有「开/关」，统一按可执行处理，避免灰色按钮像是不可点
+    val isActive = action.kind == QuickActionKind.MOMENTARY || action.isOn(primary.state)
+    val tint = if (isActive) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.onSurfaceVariant
-    val container = if (isOn) MaterialTheme.colorScheme.primaryContainer
+    val container = if (isActive) MaterialTheme.colorScheme.primaryContainer
     else MaterialTheme.colorScheme.surfaceVariant
 
     Box(
@@ -299,7 +304,11 @@ private fun QuickActionButton(
     ) {
         Icon(
             imageVector = icon,
-            contentDescription = "操作",
+            contentDescription = when (action.kind) {
+                QuickActionKind.MOMENTARY -> "执行"
+                QuickActionKind.POSITION -> if (isActive) "关闭" else "打开"
+                else -> if (isActive) "关闭" else "打开"
+            },
             tint = tint,
             modifier = Modifier.size(20.dp),
         )
@@ -337,10 +346,13 @@ private fun iconFor(device: HomeDevice, primary: Entity?): ImageVector {
     }
 }
 
-private fun statusLabel(entity: Entity): String = when {
-    entity.domain == "button" -> "可触发"
-    entity.state == "unavailable" || entity.state == "unknown" -> "离线"
-    entity.state in ON_STATES -> "在线"
-    entity.domain in listOf("light", "switch", "fan", "media_player", "cover", "lock") -> "关闭"
-    else -> "在线"
+private fun statusLabel(entity: Entity): String {
+    val action = quickActionFor(entity.domain)
+    return when {
+        action.kind == QuickActionKind.MOMENTARY -> "可触发"
+        entity.state == "unavailable" || entity.state == "unknown" -> "离线"
+        action.kind == QuickActionKind.READ_ONLY -> "在线"
+        action.isOn(entity.state) -> "在线"
+        else -> "关闭"
+    }
 }
