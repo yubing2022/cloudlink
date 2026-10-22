@@ -21,6 +21,16 @@ data class Entity(
     /** HA's entity_category: null=real, "config"=config entry,
      *  "diagnostic"=diagnostic. HA plugin filters out non-null. */
     @Json(name = "entity_category") val entityCategory: String? = null,
+    // HA entity-registry provenance. Unlike `name` (renamable, localised)
+    // and `attributes.device_class` (many integrations never set it),
+    // these are stable: `platform` is the integration that created the
+    // entity and `unique_id` is that integration's own id (xiaomi_miot
+    // encodes siid/piid in it). Null until the plugin is upgraded to
+    // v0.2.0 and HA does a full sync.
+    val platform: String? = null,
+    @Json(name = "unique_id") val uniqueId: String? = null,
+    @Json(name = "original_device_class") val originalDeviceClass: String? = null,
+    @Json(name = "original_name") val originalName: String? = null,
     @Json(name = "last_state_change") val lastStateChange: String? = null,
     @Json(name = "updated_at") val updatedAt: String? = null,
 ) {
