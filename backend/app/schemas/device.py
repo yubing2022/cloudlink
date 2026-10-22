@@ -15,6 +15,12 @@ class DeviceEntitySchema(BaseModel):
     attributes: Dict[str, Any] = Field(default_factory=dict)
     last_state_change: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # HA entity-registry provenance (see DeviceEntity.platform). None
+    # until the plugin sends them (v0.2.0+) and HA does a full sync.
+    platform: Optional[str] = None
+    unique_id: Optional[str] = None
+    original_device_class: Optional[str] = None
+    original_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

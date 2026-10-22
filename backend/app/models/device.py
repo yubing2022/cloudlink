@@ -89,6 +89,31 @@ class DeviceEntity(Base):
     entity_category: Mapped[Optional[str]] = mapped_column(
         String(32), nullable=True, index=True,
     )
+    # Stable identity + semantic signals from HA's entity registry.
+    # The cloud labels entities (e.g. "this switch is the indicator
+    # light") from these instead of matching the display name, which
+    # the user can rename and which is localised per integration.
+    #   platform              - integration that created it (xiaomi_miot,
+    #                           yeelight, ...); decides which labelling
+    #                           rule applies
+    #   unique_id             - integration-internal id, stable across
+    #                           renames; xiaomi_miot encodes siid/piid
+    #   original_device_class - HA's device_class even if the user
+    #                           overrode it in the UI
+    #   original_name         - HA's original name even if renamed
+    # All four are NULL for payloads from older plugins.
+    platform: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True, index=True,
+    )
+    unique_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, index=True,
+    )
+    original_device_class: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True,
+    )
+    original_name: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default="now()", nullable=False,
