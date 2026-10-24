@@ -403,16 +403,39 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "docker logs --tail 50 cloudlink-backend"
 ```
 
-### 5.3 强制 HA plugin 重新 sync
+### 5.3 更新 HA 插件（并强制重新 sync）
+
+HA 主机是 `192.168.3.143`（家里局域网）。Mac 在同一网段时 SSH 免密可达，**不需要 HA 令牌**：
 
 ```bash
-# 通过 HA 端 reload 集成（用户家那台 192.168.3.143）
+# HA 实际加载的目录（domain 就是目录名 cloudlink）
+D=/config/custom_components/cloudlink
+
+# 1) 备份 —— 备份目录绝对不能留在 custom_components/ 下，见下面「坑」
+ssh root@192.168.3.143 "cp -a $D /config/cloudlink-backup-$(date +%Y%m%d)"
+
+# 2) 传改动的文件（先落 /tmp，再 cp 覆盖，避免写一半被 HA 读到）
+scp ha-plugin/custom_components/cloudlink/{cloud_client.py,manifest.json} \
+    root@192.168.3.143:/tmp/
+ssh root@192.168.3.143 "cp /tmp/cloud_client.py /tmp/manifest.json $D/ && md5sum $D/cloud_client.py"
+
+# 3) 重启
 ssh root@192.168.3.143 "ha core restart"
-# 或只 reload 集成
-ssh root@192.168.3.143 "ha core reload"
+
+# 4) 验证：sync payload 变大 + 新字段在库里有值
+ssh root@192.168.3.143 "ha core logs --lines 200 | grep -i 'device_sync sent OK'"
 ```
 
 注意：reload 集成不会重新执行 device_sync，**只有 `ha core restart`（重启整个 HA core）会触发**。
+
+**坑（2026-10-24 实测，两次都踩了）**
+
+- **备份目录不要放 `/config/custom_components/` 下**。HA 把该目录下每个子目录都当集成加载，多出来的 `cloudlink.bak-20261024` 会让 cloudlink 一起加载失败：
+  `Setup failed for custom integration 'cloudlink': Unable to import component: No module named 'custom_components.cloudlink.bak-20261024'`。
+  备份放 `/config/` 根下即可，改完确认 `ls /config/custom_components/` 只有正经集成。
+- **有两份插件，别改错**。`/config/custom_components/ha-plugin/custom_components/cloudlink/` 是 2026-08-30 嵌套放错的旧副本（`cloud_client.py` 只有 7075 字节），HA 不会加载它（那个目录根下没有 manifest.json）。真正生效的是 `/config/custom_components/cloudlink/`。
+- **验证别只看「重启没报错」**。加载失败时 HA 照样能起来、UI 也正常，只有日志里的 `Setup failed` 和云端不同步能看出来。判定生效看两点：sync payload 字节数变大（加 4 个 registry 字段后 43846 → 62221），以及库里 `select count(*) from devices where platform is not null` 有值。
+- `devices` 表里有约 47 行 `platform` 为空，属于历史测试实例（instance 3/4/46/48/51/54，实体名如 `light.test`、`switch.my_plug`），不是插件没更新。真实实例是 45（14 devices / 91 entities）。
 
 ### 5.4 看 HA plugin 端日志
 
