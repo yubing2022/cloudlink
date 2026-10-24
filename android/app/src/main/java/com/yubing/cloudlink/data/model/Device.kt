@@ -31,6 +31,13 @@ data class Entity(
     @Json(name = "unique_id") val uniqueId: String? = null,
     @Json(name = "original_device_class") val originalDeviceClass: String? = null,
     @Json(name = "original_name") val originalName: String? = null,
+    /**
+     * 云端打好的语义槽位标签：`main` / `power` / `child_lock` / `indicator` …
+     * 由后端按 platform + unique_id 判定（见 backend app/services/entity_labels.py），
+     * 比在本地猜实体名稳得多。null = 云端也没认出来 → 走 [com.yubing.cloudlink.data.model.Slot]
+     * 的本地回退规则。
+     */
+    val slot: String? = null,
     @Json(name = "last_state_change") val lastStateChange: String? = null,
     @Json(name = "updated_at") val updatedAt: String? = null,
 ) {

@@ -33,6 +33,17 @@ package com.yubing.cloudlink.data.model
  * 槽位吃剩下的实体全部折进「高级设置 / 设备信息」折叠区。
  *
  * 于是同一品类的详情页，行结构、行顺序、行文案都由模板决定，与集成无关。
+ *
+ * ## 槽位怎么选中实体：云端标签优先，本地规则兜底
+ *
+ *  1. 后端按 platform + unique_id 给实体打语义标签（[Entity.slot]，规则见
+ *     backend/app/services/entity_labels.py）。槽位声明自己的 [Slot.slotId]，
+ *     命中就直接用 —— 不受用户改名影响，也不受各集成中文文案差异影响。
+ *  2. 云端没给标签（插件 < 0.2.0、或这个集成我们还没写规则）时，回退到
+ *     [Slot.pick] 的本地规则：device_class + 实体名关键词。
+ *
+ * 第 2 条是过渡用的兜底，不是主要逻辑：本地猜中文名注定不稳，能靠标签的
+ * 都应该靠标签。
  */
 
 /** 槽位这一行右侧渲染成什么。 */
@@ -49,16 +60,32 @@ enum class SlotRender {
 
 /**
  * @param title 行标题，**固定文案**，不取实体名 —— 这是两个品牌显示一致的前提。
- * @param pick 从实体池里挑一个实体填这个槽位；返回 null 则整行隐藏。
+ * @param slotId 云端语义标签 id（见 backend app/services/entity_labels.py，
+ *               值如 `main` / `power` / `child_lock`）。**命中就直接用**，
+ *               不再在本地猜；云端没给（或没有实体带这个标签）时才回退到 [pick]。
+ *               云端是按 platform + unique_id 判定的，不受用户改名、不受中文
+ *               文案差异影响，比本地规则硬得多。
+ * @param guard 命中之后仍然要过的关卡，标签路径和回退路径都要过。
+ * @param pick 本地回退规则：从实体池里挑一个实体填这个槽位；返回 null 则整行隐藏。
  *             `used` 是已经被前面的槽位占用的 entity_id，避免同一个实体
  *             被两行重复引用（比如主开关又被「童锁」行选中）。
  */
 data class Slot(
     val title: String,
     val render: SlotRender,
+    val slotId: String? = null,
+    private val guard: (Entity) -> Boolean = { true },
     private val pick: (HomeDevice, Set<String>) -> Entity?,
 ) {
-    fun pickFrom(device: HomeDevice, used: Set<String>): Entity? = pick(device, used)
+    fun pickFrom(device: HomeDevice, used: Set<String>): Entity? {
+        if (slotId != null) {
+            val labelled = device.entities.firstOrNull {
+                it.slot == slotId && it.entity_id !in used && guard(it)
+            }
+            if (labelled != null) return labelled
+        }
+        return pick(device, used)?.takeIf(guard)
+    }
 }
 
 /** 一个填上了实体的槽位，即详情页上的一行。 */
@@ -110,17 +137,31 @@ private fun List<Entity>.pickFirst(
  * 写死的 SWITCH，结果温湿度计详情页顶上多出一个控制不了任何东西的
  * 「电源」开关。挑不到可控实体时就让这个槽位整体消失。
  */
-private val SLOT_PRIMARY = Slot("电源", SlotRender.SWITCH) { dev, used ->
-    dev.primaryEntityFor()?.takeIf {
-        it.entity_id !in used && quickActionFor(it.domain).kind != QuickActionKind.READ_ONLY
-    }
+/**
+ * 主控件必须真的可控 —— [HomeDevice.primaryEntityFor] 对一个纯传感器设备
+ * （温湿度计只有 3 个 sensor）会兜底返回 `entities.first()`，而槽位渲染是
+ * 写死的 SWITCH，结果温湿度计详情页顶上多出一个控制不了任何东西的「电源」
+ * 开关。标签路径也要过这一关：云端只按集成语义打 `main`，不保证它可开关。
+ */
+private val PRIMARY_GUARD: (Entity) -> Boolean = {
+    quickActionFor(it.domain).kind != QuickActionKind.READ_ONLY
+}
+
+private val SLOT_PRIMARY = Slot(
+    title = "电源",
+    render = SlotRender.SWITCH,
+    slotId = "main",
+    guard = PRIMARY_GUARD,
+) { dev, used ->
+    dev.primaryEntityFor()?.takeIf { it.entity_id !in used }
 }
 
 private fun readingSlot(
     title: String,
+    slotId: String,
     vararg deviceClasses: String,
     exclude: List<String> = emptyList(),
-): Slot = Slot(title, SlotRender.READING) { dev, used ->
+): Slot = Slot(title, SlotRender.READING, slotId = slotId) { dev, used ->
     dev.entities.pickFirst(used, exclude) {
         it.domain == "sensor" && it.deviceClass() in deviceClasses
     }
@@ -138,24 +179,24 @@ val PLUG_TEMPLATE = DeviceTemplate(
     foldRest = true,
     slots = listOf(
         SLOT_PRIMARY,
-        readingSlot("实时功率", "power"),
-        readingSlot("累计电量", "energy"),
-        readingSlot("电压", "voltage"),
-        readingSlot("电流", "current"),
+        readingSlot("实时功率", slotId = "power", "power"),
+        readingSlot("累计电量", slotId = "energy", "energy"),
+        readingSlot("电压", slotId = "voltage", "voltage"),
+        readingSlot("电流", slotId = "current", "current"),
         // 小米的「设备温度」挂在「* 开关次数」这个 siid 下，名字里带「开关次数」
         // 但 device_class 是 temperature，靠 device_class 命中即可。
-        readingSlot("设备温度", "temperature"),
-        Slot("童锁", SlotRender.SWITCH) { dev, used ->
+        readingSlot("设备温度", slotId = "temperature", "temperature"),
+        Slot("童锁", SlotRender.SWITCH, slotId = "child_lock") { dev, used ->
             dev.entities.pickFirst(used) {
                 it.domain == "switch" && CHILD_LOCK_WORDS.any { w -> it.name.contains(w) }
             }
         },
-        Slot("指示灯", SlotRender.SWITCH) { dev, used ->
+        Slot("指示灯", SlotRender.SWITCH, slotId = "indicator") { dev, used ->
             dev.entities.pickFirst(used, exclude = listOf("勿扰")) {
                 it.domain == "switch" && it.name.contains("指示灯")
             }
         },
-        Slot("故障状态", SlotRender.READING) { dev, used ->
+        Slot("故障状态", SlotRender.READING, slotId = "problem") { dev, used ->
             dev.entities.pickFirst(used) {
                 it.domain == "binary_sensor" && it.deviceClass() == "problem"
             } ?: dev.entities.pickFirst(used) {
