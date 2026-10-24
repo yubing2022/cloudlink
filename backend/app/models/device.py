@@ -129,5 +129,26 @@ class DeviceEntity(Base):
     device: Mapped[Optional["HADevice"]] = relationship(back_populates="entities")
     ha_instance: Mapped["HAInstance"] = relationship(back_populates="entities")
 
+    @property
+    def slot(self) -> Optional[str]:
+        """Semantic slot label ("main", "power", "child_lock", ...) or None.
+
+        Labelled from platform + unique_id, which are stable across
+        renames, instead of from the display name. None means "we can't
+        tell" and the App falls back to its own template rules — see
+        app/services/entity_labels.py for the rules and why `main` is
+        only assigned when an integration-specific rule matches.
+
+        Defined here (rather than passed in at the call site) because
+        the device endpoints serialise ORM objects directly via
+        `from_attributes`, so this is the one place that can feed every
+        consumer — App, capability and MCP alike.
+        """
+        from app.services.entity_labels import entity_slot
+
+        return entity_slot(
+            self.platform, self.unique_id, self.domain, self.original_device_class,
+        )
+
     def __repr__(self) -> str:
         return f"<DeviceEntity {self.entity_id} state={self.state!r}>"

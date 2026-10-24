@@ -21,6 +21,9 @@ class DeviceEntitySchema(BaseModel):
     unique_id: Optional[str] = None
     original_device_class: Optional[str] = None
     original_name: Optional[str] = None
+    # Cloud-assigned semantic slot ("main", "power", "child_lock", ...).
+    # None = unknown, and clients fall back to their own heuristics.
+    slot: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
