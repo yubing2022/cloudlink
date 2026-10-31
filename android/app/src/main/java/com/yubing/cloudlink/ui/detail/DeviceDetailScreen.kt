@@ -1,24 +1,50 @@
 package com.yubing.cloudlink.ui.detail
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Lightbulb
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yubing.cloudlink.data.icon.DeviceIconImage
@@ -33,8 +59,15 @@ import com.yubing.cloudlink.data.model.filledSlots
 import com.yubing.cloudlink.data.model.quickActionFor
 import com.yubing.cloudlink.data.model.restEntities
 import com.yubing.cloudlink.data.model.template
+import com.yubing.cloudlink.ui.components.ErrorState
+import com.yubing.cloudlink.ui.components.LoadingState
+import com.yubing.cloudlink.ui.components.SectionCard
+import com.yubing.cloudlink.ui.components.SectionTitle
+import com.yubing.cloudlink.ui.components.domainIcon
+import com.yubing.cloudlink.ui.components.stateColor
+import com.yubing.cloudlink.ui.theme.statusColors
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceDetailScreen(
     onBack: () -> Unit,
@@ -57,28 +90,14 @@ fun DeviceDetailScreen(
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             when {
-                state.isLoading ->
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
-                    }
-                state.error != null ->
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(state.error!!, color = MaterialTheme.colorScheme.error)
-                            Spacer(Modifier.height(8.dp))
-                            Button(onClick = viewModel::load) { Text("重试") }
-                        }
-                    }
-                device == null ->
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("没有数据")
-                    }
-                else ->
-                    DeviceDetailContent(
-                        device = device,
-                        onEntityAction = viewModel::control,
-                        onBrightness = viewModel::setBrightness,
-                    )
+                state.isLoading -> LoadingState()
+                state.error != null -> ErrorState(message = state.error!!, onRetry = viewModel::load)
+                device == null -> LoadingState()
+                else -> DeviceDetailContent(
+                    device = device,
+                    onEntityAction = viewModel::control,
+                    onBrightness = viewModel::setBrightness,
+                )
             }
         }
     }
@@ -128,18 +147,15 @@ private fun DeviceDetailContent(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        item(key = "header") {
-            DeviceHeader(device)
-        }
+        item(key = "header") { DeviceHeader(device) }
 
         if (filled.isNotEmpty()) {
-            item(key = "slots_title") {
-                SectionTitle(text = "控制与状态")
-            }
+            item(key = "slots_title") { SectionTitle(text = "控制与状态") }
             item(key = "slots_card") {
-                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                SectionCard {
                     Column {
                         filled.forEachIndexed { i, slot ->
                             if (i > 0) HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -157,7 +173,7 @@ private fun DeviceDetailContent(
         if (spareControls.isNotEmpty()) {
             item(key = "controls_title") { SectionTitle(text = "其他控制") }
             item(key = "controls_card") {
-                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                SectionCard {
                     Column {
                         spareControls.forEachIndexed { i, entity ->
                             if (i > 0) HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -175,7 +191,7 @@ private fun DeviceDetailContent(
         if (spareReadings.isNotEmpty()) {
             item(key = "readings_title") { SectionTitle(text = "读数") }
             item(key = "readings_card") {
-                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                SectionCard {
                     Column {
                         spareReadings.forEachIndexed { i, entity ->
                             if (i > 0) HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -240,16 +256,6 @@ private fun List<Entity>.sortedForReading(): List<Entity> = sortedWith(
     )
 )
 
-@Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp),
-    )
-}
-
 /**
  * 可折叠分区。默认收起 —— 「高级设置」里全是各集成私有的参数，
  * 「设备信息」里是固件版本这类诊断数据，都不该占据首屏。
@@ -262,7 +268,7 @@ private fun FoldSection(
     onToggle: () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    SectionCard {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -272,7 +278,7 @@ private fun FoldSection(
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.weight(1f),
             )
             Text(
@@ -282,9 +288,10 @@ private fun FoldSection(
             )
             Spacer(Modifier.width(8.dp))
             Icon(
-                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
             )
         }
         if (expanded) {
@@ -315,6 +322,20 @@ private fun SlotRow(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 读数行不画图标：功率、电量、温度都是 sensor，同一个图标重复
+            // 四遍没有信息量。用等宽留白占位，保证各行的左边界仍然对齐。
+            if (filled.slot.render == SlotRender.READING) {
+                Spacer(Modifier.padding(end = 8.dp).size(22.dp))
+            } else {
+                Icon(
+                    imageVector = domainIcon(entity.domain),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .padding(end = 8.dp)
+                        .size(22.dp),
+                )
+            }
             Text(
                 text = filled.slot.title,
                 style = MaterialTheme.typography.bodyLarge,
@@ -347,7 +368,7 @@ private fun SlotRow(
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
                     ) {
                         Icon(
-                            Icons.Default.PlayArrow,
+                            Icons.Filled.PlayArrow,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
                         )
@@ -364,67 +385,119 @@ private fun SlotRow(
     }
 }
 
+/**
+ * 设备头部。
+ *
+ * 之前这里摆的是「实体 28 / 开启中 1」两个 pill —— 用户不关心实体总数，
+ * 却占了首屏最贵的位置。换成真正有用的：房间 + 在线状态。
+ */
 @Composable
 private fun DeviceHeader(device: HomeDevice) {
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Use the device's photo (from miot-spec.com) when available,
-                // otherwise fall back to the category icon (printer / camera /
-                // speaker …) so a device without a product photo still reads
-                // as what it is instead of a generic placeholder.
+    SectionCard {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 设备照片（miot-spec.com）放在统一容器里：没有照片时退到品类
+            // 图标，容器底色保证不同来源的图视觉重量一致。
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .background(
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        shape = RoundedCornerShape(16.dp),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
                 DeviceIconImage(
                     model = device.model,
-                    size = 56.dp,
+                    size = 48.dp,
                     fallback = device.categoryIcon(),
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
                 )
-                Spacer(Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = device.name,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    val sub = listOfNotNull(device.area, device.manufacturer, device.model)
-                        .filter { it.isNotBlank() }
-                        .joinToString(" • ")
-                    if (sub.isNotEmpty()) {
-                        Text(
-                            text = sub,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
             }
-            Spacer(Modifier.height(12.dp))
-            val on = device.entities.count { quickActionFor(it.domain).isOn(it.state) }
-            Row(modifier = Modifier.fillMaxWidth()) {
-                StatusPill(label = "实体", value = "${device.entities.size}")
-                Spacer(Modifier.width(8.dp))
-                StatusPill(label = "开启中", value = "$on")
+            Spacer(Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = device.name,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                val sub = listOfNotNull(device.manufacturer, device.model)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" • ")
+                if (sub.isNotBlank()) {
+                    Text(
+                        text = sub,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    device.area?.takeIf { it.isNotBlank() }?.let { Chip(text = it) }
+                    StatusChip(text = deviceStatusLabel(device), state = deviceStatusState(device))
+                }
             }
         }
     }
 }
 
+/** 「几项开启 / 待机 / 离线」，比「实体 28」有用。 */
+private fun deviceStatusLabel(device: HomeDevice): String {
+    if (device.entities.isEmpty()) return "无实体"
+    val available = device.entities.count { it.state != "unavailable" && it.state != "unknown" }
+    if (available == 0) return "离线"
+    val on = device.entities.count { quickActionFor(it.domain).isOn(it.state) }
+    return when {
+        on > 0 -> "$on 项开启"
+        available < device.entities.size -> "部分离线"
+        else -> "待机中"
+    }
+}
+
+private fun deviceStatusState(device: HomeDevice): DeviceStatus {
+    if (device.entities.isEmpty()) return DeviceStatus.IDLE
+    val available = device.entities.count { it.state != "unavailable" && it.state != "unknown" }
+    return when {
+        available == 0 -> DeviceStatus.OFFLINE
+        device.entities.any { quickActionFor(it.domain).isOn(it.state) } -> DeviceStatus.ON
+        else -> DeviceStatus.IDLE
+    }
+}
+
+private enum class DeviceStatus { ON, IDLE, OFFLINE }
+
 @Composable
-private fun StatusPill(label: String, value: String) {
+private fun StatusChip(text: String, state: DeviceStatus) {
+    val (container, content) = when (state) {
+        DeviceStatus.ON -> MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.onPrimaryContainer
+        DeviceStatus.OFFLINE -> MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
+        DeviceStatus.IDLE -> MaterialTheme.colorScheme.surfaceContainerHighest to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(shape = MaterialTheme.shapes.small, color = container, contentColor = content) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun Chip(text: String) {
     Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer,
         shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
     ) {
-        Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-            Text(label, style = MaterialTheme.typography.labelSmall)
-            Spacer(Modifier.width(6.dp))
-            Text(
-                value,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+        )
     }
 }
 
@@ -444,10 +517,13 @@ private fun EntityControlRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = entityIcon(entity.domain),
-                fontSize = 22.sp,
-                modifier = Modifier.padding(end = 12.dp),
+            Icon(
+                imageVector = domainIcon(entity.domain),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .padding(end = 10.dp)
+                    .size(22.dp),
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(entity.name, style = MaterialTheme.typography.bodyMedium)
@@ -462,10 +538,7 @@ private fun EntityControlRow(
         // For dimmable lights, render the brightness slider on a second
         // row so the switch stays at the right edge of the card.
         if (entity.domain == "light" && entity.supportsBrightness) {
-            BrightnessSlider(
-                entity = entity,
-                onChange = onBrightness,
-            )
+            BrightnessSlider(entity = entity, onChange = onBrightness)
         }
     }
 }
@@ -484,10 +557,13 @@ private fun EntityRow(entity: Entity, deviceName: String) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = entityIcon(entity.domain),
-            fontSize = 22.sp,
-            modifier = Modifier.padding(end = 12.dp),
+        Icon(
+            imageVector = domainIcon(entity.domain),
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .padding(end = 10.dp)
+                .size(22.dp),
         )
         Text(
             text = entity.shortName(deviceName),
@@ -515,12 +591,8 @@ private fun BrightnessSlider(
     entity: Entity,
     onChange: (Entity, Int) -> Unit,
 ) {
-    // The light is "off" right now — disable the slider. We still show it
-    // so the user can pre-set brightness for the next turn-on.
+    // 灯当前是关的：滑块禁用但仍显示，方便先把亮度调好再开灯。
     val isOn = quickActionFor(entity.domain).isOn(entity.state)
-    // currentBrightness is null when the light is off; we hold the last
-    // user-set value via the optimistic update in the ViewModel, so this
-    // slider position stays put between on→off→on.
     val level = entity.effectiveBrightness()
     Row(
         modifier = Modifier
@@ -529,22 +601,21 @@ private fun BrightnessSlider(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector = Icons.Default.Lightbulb,
+            imageVector = Icons.Outlined.Lightbulb,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(18.dp),
         )
-        Spacer(Modifier.width(4.dp))
+        Spacer(Modifier.width(8.dp))
         Slider(
             modifier = Modifier.weight(1f),
             value = level.toFloat(),
             onValueChange = { onChange(entity, it.toInt()) },
-            // valueRange is 1..255 (0 is "off", separate Switch toggles that)
             valueRange = 1f..255f,
             steps = 25,
             enabled = isOn,
         )
-        Spacer(Modifier.width(4.dp))
+        Spacer(Modifier.width(8.dp))
         Text(
             text = "${(level * 100) / 255}%",
             style = MaterialTheme.typography.labelSmall,
@@ -579,7 +650,7 @@ private fun EntityControl(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
             ) {
                 Icon(
-                    Icons.Default.PlayArrow,
+                    Icons.Filled.PlayArrow,
                     contentDescription = null,
                     modifier = Modifier.size(16.dp),
                 )
@@ -622,32 +693,4 @@ private fun Entity.displayValue(): String {
         else -> state
     }
     return if (unit.isNullOrBlank() || raw == "不可用") raw else "$raw $unit"
-}
-
-private fun entityIcon(domain: String) = when (domain) {
-    "light" -> "💡"
-    "switch" -> "🔌"
-    "fan" -> "🌀"
-    "media_player" -> "🎵"
-    "sensor" -> "📊"
-    "binary_sensor" -> "🔘"
-    "button" -> "🔲"
-    "climate" -> "🌡️"
-    "cover" -> "🪟"
-    "lock" -> "🔒"
-    "camera" -> "📷"
-    "humidifier" -> "💧"
-    "vacuum" -> "🤖"
-    "water_heater" -> "🚿"
-    "number" -> "🔢"
-    "select" -> "📋"
-    "text" -> "📝"
-    else -> "⚙️"
-}
-
-private fun stateColor(state: String, domain: String): Color = when {
-    quickActionFor(domain).isOn(state) -> Color(0xFF2E7D32)
-    state in listOf("off", "idle", "closed", "locked", "inactive") -> Color(0xFF616161)
-    state in listOf("unavailable", "unknown") -> Color(0xFF616161)
-    else -> Color(0xFFE65100)
 }

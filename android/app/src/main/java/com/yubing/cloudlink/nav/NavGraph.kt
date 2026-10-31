@@ -79,6 +79,10 @@ fun AppNavGraph(
         composable("settings") {
             com.yubing.cloudlink.ui.settings.SettingsScreen(
                 onBack = { navController.popBackStack() },
+                // 退出登录后 AuthState 会变成 false，nav 效应接管跳转登录页。
+                onLogout = {
+                    navController.navigate("login") { popUpTo(0) { inclusive = true } }
+                },
             )
         }
     }

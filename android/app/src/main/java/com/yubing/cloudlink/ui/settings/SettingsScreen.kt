@@ -39,6 +39,8 @@ import com.yubing.cloudlink.mcp.McpRunState
 import com.yubing.cloudlink.mcp.McpServiceStarter
 import com.yubing.cloudlink.mcp.McpStatus
 import com.yubing.cloudlink.mcp.McpStatusTracker
+import com.yubing.cloudlink.ui.components.SectionCard
+import com.yubing.cloudlink.ui.theme.statusColors
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
@@ -181,6 +183,19 @@ class SettingsViewModel @Inject constructor(
             _state.value = _state.value.copy(hidden = allIds)
         }
     }
+
+    /**
+     * 退出登录。
+     *
+     * 原来这个动作挂在首页顶栏的图标上 —— 破坏性操作放在一眼能看到、
+     * 拇指最容易碰到的位置，误触即登出。移到设置页底部。
+     */
+    fun logout(onDone: () -> Unit) {
+        viewModelScope.launch {
+            tokenStore.clear()
+            onDone()
+        }
+    }
 }
 
 /**
@@ -199,6 +214,7 @@ private enum class SettingsPage(val title: String) {
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onLogout: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -233,6 +249,7 @@ fun SettingsScreen(
                 deviceSummary = visibleSummary(state),
                 onOpenMcp = { page = SettingsPage.MCP },
                 onOpenDevices = { page = SettingsPage.DEVICE },
+                onLogout = { viewModel.logout(onLogout) },
             )
 
             SettingsPage.MCP -> McpServerCard(
@@ -267,18 +284,36 @@ private fun SettingsRootPage(
     deviceSummary: String,
     onOpenMcp: () -> Unit,
     onOpenDevices: () -> Unit,
+    onLogout: () -> Unit,
 ) {
-    Column(modifier = modifier) {
-        SettingsEntry(
-            title = "MCP 服务设置",
-            summary = "$endpoint · $statusText",
-            onClick = onOpenMcp,
-        )
-        SettingsEntry(
-            title = "设备显示设置",
-            summary = deviceSummary,
-            onClick = onOpenDevices,
-        )
+    Column(modifier = modifier.padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(12.dp))
+        SectionCard {
+            Column {
+                SettingsEntry(
+                    title = "MCP 服务设置",
+                    summary = "$endpoint · $statusText",
+                    onClick = onOpenMcp,
+                )
+                HorizontalDivider(modifier = Modifier.padding(start = 16.dp))
+                SettingsEntry(
+                    title = "设备显示设置",
+                    summary = deviceSummary,
+                    onClick = onOpenDevices,
+                )
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        // 退出登录单独一组，用 error 色 —— 破坏性操作不该和用户天天点的
+        // 东西混在一张卡片里。
+        SectionCard {
+            SettingsEntry(
+                title = "退出登录",
+                summary = "清除本机登录状态",
+                onClick = onLogout,
+                danger = true,
+            )
+        }
     }
 }
 
@@ -288,8 +323,12 @@ private fun SettingsEntry(
     title: String,
     summary: String,
     onClick: () -> Unit,
+    danger: Boolean = false,
 ) {
-    Surface(onClick = onClick) {
+    val titleColor = if (danger) MaterialTheme.colorScheme.error
+    else MaterialTheme.colorScheme.onSurface
+    // 容器由调用方给（SectionCard），这里透明，只保留点击语义与水波纹。
+    Surface(onClick = onClick, color = Color.Transparent) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -301,23 +340,25 @@ private fun SettingsEntry(
                     title,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
+                    color = titleColor,
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
                     summary,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Spacer(Modifier.width(8.dp))
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (!danger) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
-    HorizontalDivider()
 }
 
 private fun visibleSummary(state: SettingsUiState): String {
@@ -374,11 +415,12 @@ private fun DeviceVisibilityPage(
                 ) {
                     byArea.forEach { (area, devs) ->
                         item(key = "area_$area") {
+                            // emoji 📍 由系统字体渲染，各家 ROM 长得不一样，去掉。
                             Text(
-                                text = "📍 $area",
+                                text = area,
                                 style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                             )
                         }
                         items(devs, key = { it.haDeviceId }) { device ->
@@ -396,9 +438,6 @@ private fun DeviceVisibilityPage(
 }
 
 // --------------------------------------------------------------------- MCP
-
-private val GreenOk = Color(0xFF2E7D32)
-private val AmberStarting = Color(0xFFB26A00)
 
 @Composable
 private fun McpServerCard(
@@ -442,74 +481,99 @@ private fun McpServerCard(
             TextButton(onClick = onRestart) { Text("重启") }
         }
 
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(12.dp))
 
         if (status.state == McpRunState.PORT_IN_USE && status.lastError != null) {
-            Text(
-                text = status.lastError!!,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-            Spacer(Modifier.height(8.dp))
+            SectionCard {
+                Text(
+                    text = status.lastError!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(16.dp),
+                )
+            }
+            Spacer(Modifier.height(12.dp))
         }
 
-        InfoRow("协议版本", CloudLinkMcpServer.LATEST_PROTOCOL)
-        InfoRow("暴露工具", "${CloudLinkMcpServer.TOOL_COUNT} 个")
-        Text(
-            text = CloudLinkMcpServer.TOOL_NAMES,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 2.dp),
-        )
-        // 运行中时这一行每秒自刷新；否则不空转。
-        val since = status.sinceMs
-        if (status.state == McpRunState.RUNNING && since != null) {
-            var now by remember(since) { mutableLongStateOf(System.currentTimeMillis()) }
-            LaunchedEffect(since) {
-                while (true) {
-                    delay(1000)
-                    now = System.currentTimeMillis()
+        // 一堆 labelSmall 平铺是最典型的"参数面板"观感，按语义分三张卡片：
+        // 服务能力 / 运行状况 / 保活。
+        SectionCard {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                InfoRow("协议版本", CloudLinkMcpServer.LATEST_PROTOCOL)
+                InfoRow("暴露工具", "${CloudLinkMcpServer.TOOL_COUNT} 个")
+                Text(
+                    text = CloudLinkMcpServer.TOOL_NAMES,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 2.dp),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        SectionCard {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                // 运行中时这一行每秒自刷新；否则不空转。
+                val since = status.sinceMs
+                if (status.state == McpRunState.RUNNING && since != null) {
+                    var now by remember(since) { mutableLongStateOf(System.currentTimeMillis()) }
+                    LaunchedEffect(since) {
+                        while (true) {
+                            delay(1000)
+                            now = System.currentTimeMillis()
+                        }
+                    }
+                    InfoRow("运行时长", durationText(now - since))
+                } else {
+                    InfoRow("运行时长", "—")
+                }
+                InfoRow("已调用", "${status.toolCalls} 次")
+                lastCallSummary(status)?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 2.dp),
+                    )
+                }
+                // 端口被占用的原因在上面的红字里已经说过，不重复。
+                status.lastError?.takeIf { status.state != McpRunState.PORT_IN_USE }?.let {
+                    InfoRow("最近失败", it)
+                }
+                InfoRow("活跃会话", "${status.activeSessions}")
+                InfoRow("端口", portLine(status, reachable))
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        SectionCard {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                InfoRow(
+                    "电池优化",
+                    when (batteryExempt) {
+                        true -> "已豁免"
+                        false -> "未豁免（锁屏后可能被回收）"
+                        null -> "未知"
+                    },
+                )
+                if (batteryExempt == false) {
+                    Text(
+                        text = "前台服务只能提高优先级，系统省电策略照样会杀进程。" +
+                            "加入白名单后才会稳定常驻；部分 ROM 还需在「应用启动管理」里允许自启动。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 2.dp),
+                    )
+                    TextButton(
+                        onClick = { onRequestBatteryExemption()?.let { context.startActivity(it) } },
+                    ) { Text("加入电池优化白名单") }
                 }
             }
-            InfoRow("运行时长", durationText(now - since))
-        } else {
-            InfoRow("运行时长", "—")
         }
-        InfoRow("已调用", "${status.toolCalls} 次")
-        lastCallSummary(status)?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 2.dp),
-            )
-        }
-        // 端口被占用的原因在上面的红字里已经说过，不重复。
-        status.lastError?.takeIf { status.state != McpRunState.PORT_IN_USE }?.let {
-            InfoRow("最近失败", it)
-        }
-        InfoRow("活跃会话", "${status.activeSessions}")
-        InfoRow("端口", portLine(status, reachable))
-        InfoRow(
-            "电池优化",
-            when (batteryExempt) {
-                true -> "已豁免"
-                false -> "未豁免（锁屏后可能被回收）"
-                null -> "未知"
-            },
-        )
-        if (batteryExempt == false) {
-            Text(
-                text = "前台服务只能提高优先级，系统省电策略照样会杀进程。" +
-                    "加入白名单后才会稳定常驻；部分 ROM 还需在「应用启动管理」里允许自启动。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 2.dp),
-            )
-            TextButton(
-                onClick = { onRequestBatteryExemption()?.let { context.startActivity(it) } },
-            ) { Text("加入电池优化白名单") }
-        }
+
+        Spacer(Modifier.height(16.dp))
     }
 }
 
@@ -532,9 +596,10 @@ private fun statusText(status: McpStatus, reachable: Boolean?): String {
 @Composable
 private fun StatusChip(status: McpStatus, reachable: Boolean?) {
     val text = statusText(status, reachable)
+    // 颜色走主题的语义色：硬编码 0xFF2E7D32 那种值在深色模式下会直接看不清。
     val color = when (text) {
-        "运行中" -> GreenOk
-        "启动中…" -> AmberStarting
+        "运行中" -> MaterialTheme.statusColors.online
+        "启动中…" -> MaterialTheme.statusColors.warning
         "已失效（进程不在）", "端口被占用" -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
@@ -555,18 +620,19 @@ private fun StatusChip(status: McpStatus, reachable: Boolean?) {
 @Composable
 private fun InfoRow(label: String, value: String) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(
             label,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.width(12.dp))
         Text(
             value,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
             modifier = Modifier.weight(1f, fill = false),
         )
     }
@@ -637,7 +703,7 @@ private fun DeviceVisibilityRow(
                 )
             }
             Text(
-                "${device.entities.size} entities",
+                "${device.entities.size} 个实体",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
