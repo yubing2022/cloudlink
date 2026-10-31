@@ -14,7 +14,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -423,9 +422,7 @@ private fun McpServerCard(
                 ),
                 modifier = Modifier.weight(1f),
             )
-            IconButton(onClick = onProbe) {
-                Icon(Icons.Default.Refresh, contentDescription = "重新检测")
-            }
+            TextButton(onClick = onProbe) { Text("刷新") }
             TextButton(
                 onClick = {
                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
@@ -435,11 +432,17 @@ private fun McpServerCard(
             ) { Text("复制") }
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(4.dp))
 
-        StatusChip(status = status, reachable = reachable)
+        // 状态徽章与「重启」同一行：重启会重建服务（会话作废），放在状态旁边
+        // 比孤零零吊在页面底部更容易被理解为"作用于这个状态"。
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusChip(status = status, reachable = reachable)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onRestart) { Text("重启") }
+        }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
 
         if (status.state == McpRunState.PORT_IN_USE && status.lastError != null) {
             Text(
@@ -507,9 +510,6 @@ private fun McpServerCard(
                 onClick = { onRequestBatteryExemption()?.let { context.startActivity(it) } },
             ) { Text("加入电池优化白名单") }
         }
-
-        Spacer(Modifier.height(4.dp))
-        TextButton(onClick = onRestart) { Text("重启 MCP 服务") }
     }
 }
 
