@@ -112,7 +112,6 @@ class CloudLinkMcpService : Service() {
             .setContentText(text)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
-            .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }
@@ -125,19 +124,32 @@ class CloudLinkMcpService : Service() {
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java) ?: return
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
-        manager.createNotificationChannel(
-            NotificationChannel(
+        if (manager.getNotificationChannel(CHANNEL_ID) == null) {
+            // 用 IMPORTANCE_DEFAULT（不能用 LOW）：LOW 在荣耀等 ROM 上会被判成「不重要」，
+            // 状态栏不显示、甚至被折叠进通知中心「不重要」区，用户就以为没有前台通知。
+            // 渠道一旦建立就被系统锁定，重复 create 不会升级已有渠道——
+            // 所以改文案/改重要性时必须换 CHANNEL_ID（这里从 cloudlink_mcp 升到 _v2）。
+            // 关掉声音与振动，避免常驻通知一直响；可见性交给 DEFAULT 重要性保证。
+            val channel = NotificationChannel(
                 CHANNEL_ID,
                 "本地 MCP 服务",
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply { description = "在 127.0.0.1:8731 提供设备控制工具，供本机 Agent 应用调用" },
-        )
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "在 127.0.0.1:8731 提供设备控制工具，供本机 Agent 应用调用"
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+            }
+            manager.createNotificationChannel(channel)
+        }
+        // 清理升级前那个被系统判成「不重要」的旧渠道，避免通知中心里留下废渠道。
+        // 放在外面、每次都跑（幂等），否则 v2 已存在时提前 return 就删不到了。
+        manager.deleteNotificationChannel("cloudlink_mcp")
     }
 
     private companion object {
         const val TAG = "CloudLinkMcp"
-        const val CHANNEL_ID = "cloudlink_mcp"
+        const val CHANNEL_ID = "cloudlink_mcp_v2"
         const val NOTIFICATION_ID = 8731
     }
 }
