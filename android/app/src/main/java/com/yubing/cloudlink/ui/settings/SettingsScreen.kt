@@ -5,10 +5,14 @@ import android.content.Intent
 import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
@@ -180,6 +184,18 @@ class SettingsViewModel @Inject constructor(
     }
 }
 
+/**
+ * 设置页的两级结构。
+ *
+ * 一级只有两个入口，二级各自占满整屏——MCP 面板十几行，和设备列表挤在一个
+ * 页面上时设备列表几乎看不到，所以拆开。
+ */
+private enum class SettingsPage(val title: String) {
+    ROOT("设置"),
+    MCP("MCP 服务设置"),
+    DEVICE("设备显示设置"),
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -191,20 +207,40 @@ fun SettingsScreen(
     val reachable by viewModel.probe.collectAsStateWithLifecycle()
     val batteryExempt by viewModel.batteryExempt.collectAsStateWithLifecycle()
 
+    var page by remember { mutableStateOf(SettingsPage.ROOT) }
+
+    // 在二级页时，系统返回键先退回一级，而不是直接离开设置。
+    BackHandler(enabled = page != SettingsPage.ROOT) { page = SettingsPage.ROOT }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("设置") },
+                title = { Text(page.title) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = {
+                        if (page != SettingsPage.ROOT) page = SettingsPage.ROOT else onBack()
+                    }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "返回")
                     }
                 },
             )
         },
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            McpServerCard(
+        when (page) {
+            SettingsPage.ROOT -> SettingsRootPage(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                statusText = statusText(status, reachable),
+                endpoint = status.endpoint,
+                deviceSummary = visibleSummary(state),
+                onOpenMcp = { page = SettingsPage.MCP },
+                onOpenDevices = { page = SettingsPage.DEVICE },
+            )
+
+            SettingsPage.MCP -> McpServerCard(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .verticalScroll(rememberScrollState()),
                 status = status,
                 reachable = reachable,
                 batteryExempt = batteryExempt,
@@ -212,68 +248,152 @@ fun SettingsScreen(
                 onProbe = { viewModel.probeMcp(); viewModel.refreshBattery() },
                 onRequestBatteryExemption = { viewModel.requestBatteryExemption() },
             )
-            HorizontalDivider()
-            // 两个批量按钮留在各自的区块里：放到顶栏会和上面的 MCP 卡片混在一起，
-            // 看不出它们只作用于设备列表。
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "设备显示设置",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f).padding(start = 16.dp),
-                )
-                TextButton(onClick = viewModel::showAll) { Text("全显示") }
-                TextButton(onClick = viewModel::hideAll) { Text("全隐藏") }
-            }
-            Text(
-                text = "勾选要在首页显示的设备。已取消勾选的设备不会从云端删除，只是不再出现在首页。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+
+            SettingsPage.DEVICE -> DeviceVisibilityPage(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                state = state,
+                onToggle = viewModel::toggleVisibility,
+                onShowAll = viewModel::showAll,
+                onHideAll = viewModel::hideAll,
             )
-            HorizontalDivider(modifier = Modifier.padding(top = 4.dp))
-            when {
-                state.isLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-                state.error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(state.error!!, color = MaterialTheme.colorScheme.error)
-                }
-                state.devices.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("还没有设备")
-                }
-                else -> {
-                    val byArea = state.devices.groupBy { it.area ?: "未分组" }
-                    val total = state.devices.size
-                    val hiddenInList = state.hidden.count { id ->
-                        state.devices.any { it.haDeviceId == id }
-                    }
-                    val visible = total - hiddenInList
-                    Text(
-                        text = "显示 $visible / $total 个设备",
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    )
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                    ) {
-                        byArea.forEach { (area, devs) ->
-                            item(key = "area_$area") {
-                                Text(
-                                    text = "📍 $area",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                )
-                            }
-                            items(devs, key = { it.haDeviceId }) { device ->
-                                DeviceVisibilityRow(
-                                    device = device,
-                                    isVisible = device.haDeviceId !in state.hidden,
-                                    onToggle = { viewModel.toggleVisibility(device.haDeviceId) },
-                                )
-                            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsRootPage(
+    modifier: Modifier = Modifier,
+    statusText: String,
+    endpoint: String,
+    deviceSummary: String,
+    onOpenMcp: () -> Unit,
+    onOpenDevices: () -> Unit,
+) {
+    Column(modifier = modifier) {
+        SettingsEntry(
+            title = "MCP 服务设置",
+            summary = "$endpoint · $statusText",
+            onClick = onOpenMcp,
+        )
+        SettingsEntry(
+            title = "设备显示设置",
+            summary = deviceSummary,
+            onClick = onOpenDevices,
+        )
+        Text(
+            text = "MCP 服务把本机已接入的设备以标准 MCP 协议暴露在回环地址上，供同设备的 Agent 应用调用。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+        )
+    }
+}
+
+/** 一级菜单的一行：标题 + 一行摘要 + 右箭头。 */
+@Composable
+private fun SettingsEntry(
+    title: String,
+    summary: String,
+    onClick: () -> Unit,
+) {
+    Surface(onClick = onClick) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    summary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    HorizontalDivider()
+}
+
+private fun visibleSummary(state: SettingsUiState): String {
+    if (state.devices.isEmpty()) return "还没有设备"
+    val hiddenInList = state.hidden.count { id -> state.devices.any { it.haDeviceId == id } }
+    return "显示 ${state.devices.size - hiddenInList} / ${state.devices.size} 个设备"
+}
+
+@Composable
+private fun DeviceVisibilityPage(
+    modifier: Modifier = Modifier,
+    state: SettingsUiState,
+    onToggle: (String) -> Unit,
+    onShowAll: () -> Unit,
+    onHideAll: () -> Unit,
+) {
+    Column(modifier = modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "勾选要在首页显示的设备",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f).padding(start = 16.dp),
+            )
+            TextButton(onClick = onShowAll) { Text("全显示") }
+            TextButton(onClick = onHideAll) { Text("全隐藏") }
+        }
+        Text(
+            text = "已取消勾选的设备不会从云端删除，只是不再出现在首页。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        HorizontalDivider(modifier = Modifier.padding(top = 4.dp))
+        when {
+            state.isLoading -> Box(
+                Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) { CircularProgressIndicator() }
+            state.error != null -> Box(
+                Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) { Text(state.error!!, color = MaterialTheme.colorScheme.error) }
+            state.devices.isEmpty() -> Box(
+                Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) { Text("还没有设备") }
+            else -> {
+                val byArea = state.devices.groupBy { it.area ?: "未分组" }
+                // 数量摘要一级菜单上已经有了，这里不再重复一行。
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                ) {
+                    byArea.forEach { (area, devs) ->
+                        item(key = "area_$area") {
+                            Text(
+                                text = "📍 $area",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            )
+                        }
+                        items(devs, key = { it.haDeviceId }) { device ->
+                            DeviceVisibilityRow(
+                                device = device,
+                                isVisible = device.haDeviceId !in state.hidden,
+                                onToggle = { onToggle(device.haDeviceId) },
+                            )
                         }
                     }
                 }
@@ -289,6 +409,7 @@ private val AmberStarting = Color(0xFFB26A00)
 
 @Composable
 private fun McpServerCard(
+    modifier: Modifier = Modifier,
     status: McpStatus,
     reachable: Boolean?,
     batteryExempt: Boolean?,
@@ -296,21 +417,7 @@ private fun McpServerCard(
     onProbe: () -> Unit,
     onRequestBatteryExemption: () -> Intent?,
 ) {
-    Column(modifier = Modifier.padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "本地 MCP 服务",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onProbe) {
-                Icon(Icons.Default.Refresh, contentDescription = "重新检测")
-            }
-        }
-
-        Spacer(Modifier.height(6.dp))
-
+    Column(modifier = modifier.padding(16.dp)) {
         // 端口与 URL：这是要填到 PalmClaw 里的那一串。
         val context = LocalContext.current
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -322,6 +429,9 @@ private fun McpServerCard(
                 ),
                 modifier = Modifier.weight(1f),
             )
+            IconButton(onClick = onProbe) {
+                Icon(Icons.Default.Refresh, contentDescription = "重新检测")
+            }
             TextButton(
                 onClick = {
                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
@@ -409,16 +519,30 @@ private fun McpServerCard(
     }
 }
 
+/**
+ * 状态文案。一级菜单的摘要行和二级页的徽章共用一份，避免两处说法不一致。
+ *
+ * 自报 RUNNING 但端口连不上 = 服务其实已经没了（进程被回收等情况），以探测为准。
+ */
+private fun statusText(status: McpStatus, reachable: Boolean?): String {
+    val effectivelyRunning = status.state == McpRunState.RUNNING && reachable != false
+    return when {
+        effectivelyRunning -> "运行中"
+        status.state == McpRunState.RUNNING -> "已失效（进程不在）"
+        status.state == McpRunState.STARTING -> "启动中…"
+        status.state == McpRunState.PORT_IN_USE -> "端口被占用"
+        else -> "未运行"
+    }
+}
+
 @Composable
 private fun StatusChip(status: McpStatus, reachable: Boolean?) {
-    // 自报 RUNNING 但端口连不上 = 服务其实已经没了（进程被回收等情况），以探测为准。
-    val effectivelyRunning = status.state == McpRunState.RUNNING && reachable != false
-    val (text, color) = when {
-        effectivelyRunning -> "运行中" to GreenOk
-        status.state == McpRunState.RUNNING -> "已失效（进程不在）" to MaterialTheme.colorScheme.error
-        status.state == McpRunState.STARTING -> "启动中…" to AmberStarting
-        status.state == McpRunState.PORT_IN_USE -> "端口被占用" to MaterialTheme.colorScheme.error
-        else -> "未运行" to MaterialTheme.colorScheme.onSurfaceVariant
+    val text = statusText(status, reachable)
+    val color = when (text) {
+        "运行中" -> GreenOk
+        "启动中…" -> AmberStarting
+        "已失效（进程不在）", "端口被占用" -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(
         shape = MaterialTheme.shapes.small,
