@@ -23,7 +23,6 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.DevicesOther
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ToggleOn
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -108,16 +107,6 @@ fun HomeScreen(
                         onDismissRequest = { menuExpanded = false },
                     ) {
                         DropdownMenuItem(
-                            text = { Text("刷新") },
-                            onClick = {
-                                menuExpanded = false
-                                viewModel.loadDevices()
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Outlined.Refresh, contentDescription = null)
-                            },
-                        )
-                        DropdownMenuItem(
                             text = { Text("设置") },
                             onClick = {
                                 menuExpanded = false
@@ -171,7 +160,10 @@ fun HomeScreen(
 private fun subtitle(state: com.yubing.cloudlink.ui.home.HomeUiState): String {
     val count = state.visibleDevices.size
     val base = if (count == 0) "暂无设备" else "$count 台设备"
-    return if (state.wsConnected) "$base · 实时同步中" else base
+    // 这里的「实时同步」是**状态**（WebSocket 已连接、设备状态会持续保持同步），
+    // 不是一次正在进行的刷新动作，所以不带「中」字，避免被误读成「还在同步、没同步完」。
+    // WS 未连接时只显示设备数，不谎报实时同步。
+    return if (state.wsConnected) "$base · 实时同步" else base
 }
 
 @Composable
