@@ -194,7 +194,7 @@ private fun DeviceGrid(
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -236,7 +236,7 @@ private fun DeviceCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(10.dp)
+                .padding(start = 10.dp, top = 10.dp, end = 10.dp, bottom = 6.dp)
                 .height(90.dp),
         ) {
             // 一级：设备名称（紧凑字号，避免大留白显空）
@@ -264,7 +264,8 @@ private fun DeviceCard(
                 )
                 Spacer(Modifier.width(5.dp))
                 Text(
-                    text = "$label · $area",
+                    // 用竖线分隔（与华为智慧生活「在线 | 客厅」一致），比圆点更清晰
+                    text = "$label | $area",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
