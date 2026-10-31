@@ -14,6 +14,9 @@ import dagger.hilt.android.AndroidEntryPoint
 import java.io.IOException
 import javax.inject.Inject
 
+/** MainActivity 在用户授予 POST_NOTIFICATIONS 后，用它让服务补发常驻通知。 */
+const val ACTION_REFRESH_NOTIFICATION = "com.yubing.cloudlink.mcp.ACTION_REFRESH_NOTIFICATION"
+
 /**
  * 承载本地 MCP server 的前台服务。
  *
@@ -37,6 +40,12 @@ class CloudLinkMcpService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 权限授予后由 MainActivity 补发一次通知：之前那条被系统吞掉了，
+        // 服务器其实已经在跑，这里把当前状态刷到通知上。
+        if (intent?.action == ACTION_REFRESH_NOTIFICATION) {
+            notify(if (server != null) runningText(CloudLinkMcpServer.PORT) else "MCP 服务未启动")
+            return START_STICKY
+        }
         if (server == null) {
             val port = CloudLinkMcpServer.PORT
             val s = CloudLinkMcpServer(core, versionName())
@@ -45,7 +54,7 @@ class CloudLinkMcpService : Service() {
                 server = s
                 Log.i(TAG, "MCP server listening on ${CloudLinkMcpServer.HOST}:$port${CloudLinkMcpServer.PATH}")
                 McpStatusTracker.reportRunning(port)
-                notify("已在 127.0.0.1:$port 提供 ${DeviceToolSchema.MCP_TOOLS.size} 个设备工具")
+                notify(runningText(port))
             } catch (e: IOException) {
                 // 端口被占用时不能让 App 崩，也不能假装成功 —— 通知和设置页都要说清状态。
                 server = null
@@ -120,6 +129,9 @@ class CloudLinkMcpService : Service() {
     private fun notify(text: String) {
         getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification(text))
     }
+
+    private fun runningText(port: Int) =
+        "已在 127.0.0.1:$port 提供 ${DeviceToolSchema.MCP_TOOLS.size} 个设备工具"
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
