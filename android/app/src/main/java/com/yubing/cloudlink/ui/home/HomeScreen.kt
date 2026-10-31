@@ -2,6 +2,7 @@ package com.yubing.cloudlink.ui.home
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -121,6 +123,13 @@ fun HomeScreen(
         },
     ) { padding ->
         // 下拉刷新：用户的第一反应是下拉，不用再去顶栏找图标。
+        // 首页背景用柔和青蓝渐变（替代纯白），让纯白卡片浮于其上形成层次，
+        // 参考华为「图片背景 + 白卡」的高级观感。
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(homeBackgroundBrush()),
+        ) {
         PullToRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = viewModel::loadDevices,
@@ -153,6 +162,7 @@ fun HomeScreen(
                 )
             }
         }
+        }
     }
 }
 
@@ -164,6 +174,17 @@ private fun subtitle(state: com.yubing.cloudlink.ui.home.HomeUiState): String {
     return if (state.wsConnected) "$base · 已连接服务器" else base
 }
 
+/** 首页背景渐变：浅色用柔和青蓝、深色用深青，让纯白卡片浮于其上形成层次。 */
+@Composable
+private fun homeBackgroundBrush(): Brush {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        Brush.verticalGradient(listOf(Color(0xFF0B0E10), Color(0xFF101416)))
+    } else {
+        Brush.verticalGradient(listOf(Color(0xFFDCEEF8), Color(0xFFF2F7FB)))
+    }
+}
+
 @Composable
 private fun DeviceGrid(
     devices: List<HomeDevice>,
@@ -173,9 +194,9 @@ private fun DeviceGrid(
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         items(devices.filter { it.entities.isNotEmpty() }, key = { it.haDeviceId }) { device ->
             DeviceCard(
@@ -198,35 +219,36 @@ private fun DeviceCard(
     val isOffline = device.entities.isNotEmpty() &&
         device.entities.all { it.state == "unavailable" || it.state == "unknown" }
 
-    // 卡片底色统一（克制，像华为那样整卡一个色），靠图标徽标 + 状态点 + 快捷按钮
-    // 的局部高亮来区分开启/关闭/离线，而不是把整卡染成主色——后者看着显糙。
+    // 浅色用纯白卡片、深色用 surfaceContainer，浮于首页渐变背景之上形成层次
+    // （参考华为「图片背景 + 白卡」），而不是浅灰卡贴白底那样发灰发空。
+    val isDark = isSystemInDarkTheme()
+    val cardColor = if (isDark) MaterialTheme.colorScheme.surfaceContainer
+    else MaterialTheme.colorScheme.surfaceContainerLowest
+
     ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() },
         shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.elevatedCardColors(containerColor = cardColor),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
-                .height(156.dp),
+                .padding(12.dp)
+                .height(104.dp),
         ) {
-            // 一级：设备名称（最大、加粗）
+            // 一级：设备名称（紧凑字号，避免大留白显空）
             Text(
                 text = device.name,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(6.dp))
-            // 二级：状态 · 房间（小灰字，圆点引导）。华为用「在线 | 客厅」，
-            // 我们换成圆点 + 「状态 · 房间」，更克制也更好读。
+            Spacer(Modifier.height(4.dp))
+            // 二级：状态 · 房间（小灰字，圆点引导）
             val area = device.area?.takeIf { it.isNotBlank() } ?: "未分组"
             val label = statusLabel(device)
             val dotColor = when (label) {
@@ -236,11 +258,11 @@ private fun DeviceCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
-                        .size(6.dp)
+                        .size(5.dp)
                         .clip(CircleShape)
                         .background(dotColor),
                 )
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(5.dp))
                 Text(
                     text = "$label · $area",
                     style = MaterialTheme.typography.labelSmall,
@@ -253,12 +275,12 @@ private fun DeviceCard(
 
             Spacer(Modifier.weight(1f))
 
-            // 底部：图标徽标（左） + 快捷按钮（右下）
+            // 底部：图标（左，透明背景直接显示） + 快捷按钮（右下）
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                DeviceIconBadge(device = device, isOn = isOn, isOffline = isOffline)
+                DeviceGlyph(device = device, isOn = isOn, isOffline = isOffline)
                 Spacer(Modifier.weight(1f))
                 QuickActionButton(
                     primary = primary,
@@ -271,57 +293,36 @@ private fun DeviceCard(
 }
 
 /**
- * 设备图标徽标：圆形浅色容器 + 居中图标，参考华为卡片里「产品小场景」的观感。
- * 开启→主色浅底 + 主色图标；关闭/中性→浅灰底 + 中性色图标；离线→更灰。
+ * 设备图标：透明背景直接显示（不套圆形灰底，参考华为产品图标），
+ * 靠 tint 区分开启(主色)/关闭(中性)/离线(更灰)。
  */
 @Composable
-private fun DeviceIconBadge(
+private fun DeviceGlyph(
     device: HomeDevice,
     isOn: Boolean,
     isOffline: Boolean,
 ) {
-    val containerColor: Color
-    val tint: Color
-    when {
-        isOffline -> {
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-            tint = MaterialTheme.colorScheme.outlineVariant
-        }
-        isOn -> {
-            // 图标底与关闭态统一（surfaceContainerHighest），靠 tint 用主色来点亮，
-            // 而不是整块浅蓝底——更接近华为那种「统一底 + 局部亮」的克制观感。
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
-            tint = MaterialTheme.colorScheme.primary
-        }
-        else -> {
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        }
+    val tint = when {
+        isOffline -> MaterialTheme.colorScheme.outlineVariant
+        isOn -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
-    Box(
-        modifier = Modifier
-            .size(56.dp)
-            .clip(CircleShape)
-            .background(containerColor),
-        contentAlignment = Alignment.Center,
-    ) {
-        val model = device.model
-        if (model.isNullOrBlank()) {
-            Icon(
-                imageVector = device.categoryIcon(),
-                contentDescription = null,
-                modifier = Modifier.size(30.dp),
-                tint = tint,
-            )
-        } else {
-            DeviceIconImage(
-                model = model,
-                size = 48.dp,
-                fallback = device.categoryIcon(),
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-            )
-        }
+    val model = device.model
+    if (model.isNullOrBlank()) {
+        Icon(
+            imageVector = device.categoryIcon(),
+            contentDescription = null,
+            modifier = Modifier.size(38.dp),
+            tint = tint,
+        )
+    } else {
+        DeviceIconImage(
+            model = model,
+            size = 44.dp,
+            fallback = device.categoryIcon(),
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+        )
     }
 }
 
@@ -368,13 +369,13 @@ private fun QuickActionButton(
                 else -> if (isOn) "关闭" else "打开"
             },
             tint = tint,
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier.size(18.dp),
         )
     }
 }
 
 /** 快捷按钮的直径，同时也是底部操作行的固定高度。 */
-private val QUICK_ACTION_SIZE = 40.dp
+private val QUICK_ACTION_SIZE = 36.dp
 
 /** 卡片底部那行状态文案。整台设备都 unavailable 才算离线。 */
 private fun statusLabel(device: HomeDevice): String {
