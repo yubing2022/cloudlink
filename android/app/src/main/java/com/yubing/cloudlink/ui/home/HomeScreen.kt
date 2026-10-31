@@ -312,13 +312,13 @@ private fun DeviceGlyph(
         Icon(
             imageVector = device.categoryIcon(),
             contentDescription = null,
-            modifier = Modifier.size(34.dp),
+            modifier = Modifier.size(41.dp),
             tint = tint,
         )
     } else {
         DeviceIconImage(
             model = model,
-            size = 40.dp,
+            size = 48.dp,
             fallback = device.categoryIcon(),
             contentDescription = null,
             contentScale = ContentScale.Fit,
