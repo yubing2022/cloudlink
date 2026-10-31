@@ -57,6 +57,20 @@ class CloudLinkMcpService : Service() {
         return START_STICKY
     }
 
+    /**
+     * 用户把 CloudLink 从最近任务里划掉时会走到这里。
+     *
+     * 默认行为是整个进程连同服务一起被拆掉，PalmClaw 那边立刻连不上。这里补一次
+     * 重启（配合 manifest 的 stopWithTask=false）。能不能真起来取决于 ROM：
+     * 原生 Android 通常可以，部分国产 ROM 会连这次重启一起拦；但试了不亏，
+     * 起不来也只是回到原来的结果。
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.i(TAG, "task removed → restart MCP service")
+        McpServiceStarter.start(this)
+    }
+
     override fun onDestroy() {
         server?.stop()
         server = null

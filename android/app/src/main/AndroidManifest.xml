@@ -10,6 +10,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!-- 保活：开机/重装后自动拉起 MCP 服务；周期 job 做进程内自愈；
+         电池优化豁免由用户在设置页授权（国产 ROM 上这才是决定性的）。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <application
         android:name=".CloudLinkApp"
         android:allowBackup="true"
@@ -46,10 +51,29 @@
         <service
             android:name=".mcp.CloudLinkMcpService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="在本机回环地址 127.0.0.1:8731 提供 MCP server，供同设备的 Agent 应用控制 CloudLink 已接入的智能家居设备" />
         </service>
+
+        <!-- 开机 / 本包升级后拉起 MCP 服务。BOOT_COMPLETED 是 Android 12+ 少数
+             允许从后台启动前台服务的场景，所以这条链路是可用的。 -->
+        <receiver
+            android:name=".mcp.McpBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 周期自愈：进程还在但服务掉了时重新拉起。 -->
+        <service
+            android:name=".mcp.McpKeepAliveJob"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
     </application>
 </manifest>

@@ -2,6 +2,9 @@ package com.yubing.cloudlink.ui.settings
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -73,9 +76,35 @@ class SettingsViewModel @Inject constructor(
     private val _probe = MutableStateFlow<Boolean?>(null)
     val probe: StateFlow<Boolean?> = _probe.asStateFlow()
 
+    /**
+     * 是否已加入电池优化白名单。
+     *
+     * 这是"会不会被回收"的决定性因素：前台服务只能提高优先级，系统在省电策略
+     * 下照样会杀；进了白名单才不会被后台清理。国产 ROM 还有自己的自启动管理，
+     * 那个只能引导用户手动开。
+     */
+    private val _batteryExempt = MutableStateFlow<Boolean?>(null)
+    val batteryExempt: StateFlow<Boolean?> = _batteryExempt.asStateFlow()
+
     init {
         load()
         probeMcp()
+        refreshBattery()
+    }
+
+    fun refreshBattery() {
+        _batteryExempt.value = runCatching {
+            val pm = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+            pm.isIgnoringBatteryOptimizations(appContext.packageName)
+        }.getOrDefault(false)
+    }
+
+    /** 请求加入电池优化白名单。系统弹窗由用户确认，我们拿不到结果，靠刷新再看。 */
+    fun requestBatteryExemption(): Intent? {
+        if (_batteryExempt.value == true) return null
+        return Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:${appContext.packageName}")
+        }
     }
 
     fun load() {
@@ -160,6 +189,7 @@ fun SettingsScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val status by viewModel.mcpStatus.collectAsStateWithLifecycle()
     val reachable by viewModel.probe.collectAsStateWithLifecycle()
+    val batteryExempt by viewModel.batteryExempt.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -177,8 +207,10 @@ fun SettingsScreen(
             McpServerCard(
                 status = status,
                 reachable = reachable,
+                batteryExempt = batteryExempt,
                 onRestart = viewModel::restartMcp,
-                onProbe = viewModel::probeMcp,
+                onProbe = { viewModel.probeMcp(); viewModel.refreshBattery() },
+                onRequestBatteryExemption = { viewModel.requestBatteryExemption() },
             )
             HorizontalDivider()
             // 两个批量按钮留在各自的区块里：放到顶栏会和上面的 MCP 卡片混在一起，
@@ -259,8 +291,10 @@ private val AmberStarting = Color(0xFFB26A00)
 private fun McpServerCard(
     status: McpStatus,
     reachable: Boolean?,
+    batteryExempt: Boolean?,
     onRestart: () -> Unit,
     onProbe: () -> Unit,
+    onRequestBatteryExemption: () -> Intent?,
 ) {
     Column(modifier = Modifier.padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -349,6 +383,26 @@ private fun McpServerCard(
         }
         InfoRow("活跃会话", "${status.activeSessions}")
         InfoRow("端口", portLine(status, reachable))
+        InfoRow(
+            "电池优化",
+            when (batteryExempt) {
+                true -> "已豁免"
+                false -> "未豁免（锁屏后可能被回收）"
+                null -> "未知"
+            },
+        )
+        if (batteryExempt == false) {
+            Text(
+                text = "前台服务只能提高优先级，系统省电策略照样会杀进程。" +
+                    "加入白名单后才会稳定常驻；部分 ROM 还需在「应用启动管理」里允许自启动。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 2.dp),
+            )
+            TextButton(
+                onClick = { onRequestBatteryExemption()?.let { context.startActivity(it) } },
+            ) { Text("加入电池优化白名单") }
+        }
 
         Spacer(Modifier.height(4.dp))
         TextButton(onClick = onRestart) { Text("重启 MCP 服务") }

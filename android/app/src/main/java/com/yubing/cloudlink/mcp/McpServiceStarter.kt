@@ -21,6 +21,8 @@ import android.util.Log
 object McpServiceStarter {
 
     fun start(context: Context) {
+        // 顺带把周期自愈挂上：它是幂等的，重复调用不会多排一个 job。
+        McpKeepAliveScheduler.schedule(context)
         try {
             val intent = Intent(context, CloudLinkMcpService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
