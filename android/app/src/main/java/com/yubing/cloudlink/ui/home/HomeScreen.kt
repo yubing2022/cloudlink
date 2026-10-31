@@ -312,13 +312,13 @@ private fun DeviceGlyph(
         Icon(
             imageVector = device.categoryIcon(),
             contentDescription = null,
-            modifier = Modifier.size(41.dp),
+            modifier = Modifier.size(50.dp),
             tint = tint,
         )
     } else {
         DeviceIconImage(
             model = model,
-            size = 48.dp,
+            size = 50.dp,
             fallback = device.categoryIcon(),
             contentDescription = null,
             contentScale = ContentScale.Fit,
@@ -369,13 +369,13 @@ private fun QuickActionButton(
                 else -> if (isOn) "关闭" else "打开"
             },
             tint = tint,
-            modifier = Modifier.size(18.dp),
+            modifier = Modifier.size(16.dp),
         )
     }
 }
 
 /** 快捷按钮的直径，同时也是底部操作行的固定高度。 */
-private val QUICK_ACTION_SIZE = 34.dp
+private val QUICK_ACTION_SIZE = 30.dp
 
 /** 卡片底部那行状态文案。整台设备都 unavailable 才算离线。 */
 private fun statusLabel(device: HomeDevice): String {
