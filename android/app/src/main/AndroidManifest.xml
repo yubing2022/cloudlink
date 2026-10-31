@@ -4,6 +4,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- 本地 MCP server（只绑 127.0.0.1）需要常驻，走前台服务。
+         API 34+ 起前台服务必须声明类型；本地 HTTP 服务不属于既有类型，
+         归为 specialUse（不上架 Play，无需担心审核）。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <application
         android:name=".CloudLinkApp"
         android:allowBackup="true"
@@ -32,6 +38,18 @@
             <intent-filter>
                 <action android:name="com.agentbridge.sdk.ACTION_CAPABILITY_PROVIDER" />
             </intent-filter>
+        </service>
+
+        <!-- 本地 MCP server（127.0.0.1:8731/mcp）：给本机 PalmClaw 这类
+             端侧 Agent 用标准 HTTP MCP 协议调用设备控制能力。
+             不对外暴露：只有本机回环能连上，也没给任何 intent-filter。 -->
+        <service
+            android:name=".mcp.CloudLinkMcpService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="在本机回环地址 127.0.0.1:8731 提供 MCP server，供同设备的 Agent 应用控制 CloudLink 已接入的智能家居设备" />
         </service>
     </application>
 </manifest>

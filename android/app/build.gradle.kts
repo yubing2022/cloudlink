@@ -77,4 +77,7 @@ dependencies {
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
 
+    // Local HTTP engine for the MCP server (127.0.0.1:8731, PalmClaw)
+    implementation(libs.nanohttpd)
+
 }
