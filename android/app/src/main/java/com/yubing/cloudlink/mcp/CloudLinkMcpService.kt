@@ -32,22 +32,26 @@ class CloudLinkMcpService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        McpStatusTracker.reportStarting()
         startForeground(NOTIFICATION_ID, notification("正在启动…"))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (server == null) {
+            val port = CloudLinkMcpServer.PORT
             val s = CloudLinkMcpServer(core, versionName())
             try {
                 s.start()
                 server = s
-                Log.i(TAG, "MCP server listening on ${CloudLinkMcpServer.HOST}:${CloudLinkMcpServer.PORT}${CloudLinkMcpServer.PATH}")
-                notify("已在 127.0.0.1:${CloudLinkMcpServer.PORT} 提供 3 个设备工具")
+                Log.i(TAG, "MCP server listening on ${CloudLinkMcpServer.HOST}:$port${CloudLinkMcpServer.PATH}")
+                McpStatusTracker.reportRunning(port)
+                notify("已在 127.0.0.1:$port 提供 ${DeviceToolSchema.MCP_TOOLS.size} 个设备工具")
             } catch (e: IOException) {
-                // 端口被占用时不能让 App 崩，也不能假装成功 —— 通知里说清状态。
+                // 端口被占用时不能让 App 崩，也不能假装成功 —— 通知和设置页都要说清状态。
                 server = null
-                Log.w(TAG, "failed to bind ${CloudLinkMcpServer.PORT}", e)
-                notify("端口 ${CloudLinkMcpServer.PORT} 被占用，MCP server 未启动")
+                Log.w(TAG, "failed to bind $port", e)
+                McpStatusTracker.reportPortInUse(port, rootCause(e, port))
+                notify("端口 $port 被占用，MCP server 未启动")
             }
         }
         return START_STICKY
@@ -56,6 +60,7 @@ class CloudLinkMcpService : Service() {
     override fun onDestroy() {
         server?.stop()
         server = null
+        McpStatusTracker.reportStopped()
         Log.i(TAG, "MCP server stopped")
         super.onDestroy()
     }
@@ -63,6 +68,21 @@ class CloudLinkMcpService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     // ---------------------------------------------------------------- helpers
+
+    /**
+     * bind 失败的原因要能看懂：单纯一句 IOException 对用户没用，
+     * 到底是「端口被占」还是「地址不可用」得区分开。
+     */
+    private fun rootCause(e: IOException, port: Int): String {
+        val msg = e.message ?: e.javaClass.simpleName
+        return if (msg.contains("Address already in use", ignoreCase = true) ||
+            msg.contains("EADDRINUSE", ignoreCase = true)
+        ) {
+            "端口 $port 已被其它进程占用（EADDRINUSE）"
+        } else {
+            msg
+        }
+    }
 
     private fun versionName(): String = try {
         @Suppress("DEPRECATION")

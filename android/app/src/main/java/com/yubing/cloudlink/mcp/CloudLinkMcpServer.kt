@@ -118,6 +118,7 @@ class CloudLinkMcpServer(
         if (!sid.isNullOrBlank() && sessions.remove(sid)) {
             Log.i(TAG, "session terminated: ${sid.take(8)}")
         }
+        McpStatusTracker.setActiveSessions(sessions.size)
         return response(Status.NO_CONTENT)
     }
 
@@ -195,9 +196,11 @@ class CloudLinkMcpServer(
                 }
             }
             Log.d(TAG, "tools/call $name → ok")
+            McpStatusTracker.recordCall(name, ok = true)
             toolResult(result.toString(), isError = false)
         } catch (e: CapError) {
             Log.w(TAG, "tools/call $name → ${e.code}")
+            McpStatusTracker.recordCall(name, ok = false, errorCode = e.code)
             // 工具执行失败按 MCP 规范走 result + isError，而不是 JSON-RPC error：
             // 这是「设备层面」的失败，Agent 要能读到它并据此改参数重试。
             toolResult(
@@ -206,6 +209,7 @@ class CloudLinkMcpServer(
             )
         } catch (t: Throwable) {
             Log.w(TAG, "tools/call $name crashed", t)
+            McpStatusTracker.recordCall(name, ok = false, errorCode = INTERNAL_ERROR_CODE)
             toolResult(
                 JSONObject().put("error_code", INTERNAL_ERROR_CODE)
                     .put("message", t.message ?: t.javaClass.simpleName).toString(),
@@ -255,7 +259,10 @@ class CloudLinkMcpServer(
         if (sessions.size >= MAX_SESSIONS) {
             sessions.firstOrNull()?.let { sessions.remove(it) }
         }
-        return UUID.randomUUID().toString().also { sessions.add(it) }
+        return UUID.randomUUID().toString().also {
+            sessions.add(it)
+            McpStatusTracker.setActiveSessions(sessions.size)
+        }
     }
 
     private fun response(status: Status): Response {
@@ -278,6 +285,10 @@ class CloudLinkMcpServer(
         const val PATH = "/mcp"
         const val SERVER_NAME = "cloudlink"
         const val LATEST_PROTOCOL = "2025-11-25"
+
+        /** 工具数量与名字：设置页展示用，必须跟着 [DeviceToolSchema.MCP_TOOLS] 走，不写死。 */
+        val TOOL_COUNT: Int get() = DeviceToolSchema.MCP_TOOLS.size
+        val TOOL_NAMES: String get() = DeviceToolSchema.MCP_TOOLS.joinToString(" / ") { it.first }
 
         private const val TAG = "CloudLinkMcp"
         private const val HDR_SESSION_ID = "Mcp-Session-Id"
