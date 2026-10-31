@@ -280,12 +280,6 @@ private fun SettingsRootPage(
             summary = deviceSummary,
             onClick = onOpenDevices,
         )
-        Text(
-            text = "MCP 服务把本机已接入的设备以标准 MCP 协议暴露在回环地址上，供同设备的 Agent 应用调用。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-        )
     }
 }
 
