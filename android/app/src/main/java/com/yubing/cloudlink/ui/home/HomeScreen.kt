@@ -194,9 +194,13 @@ private fun DeviceGrid(
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        // 「留白」的三个维度分别对应下面三个值，别再混为一谈：
+        //   horizontalArrangement = 卡片之间的左右间距
+        //   verticalArrangement   = 卡片之间的上下间距
+        //   contentPadding.horizontal = 卡片与屏幕左右边缘的间距
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         items(devices.filter { it.entities.isNotEmpty() }, key = { it.haDeviceId }) { device ->
             DeviceCard(
