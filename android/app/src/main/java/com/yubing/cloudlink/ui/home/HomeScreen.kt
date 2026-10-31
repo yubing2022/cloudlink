@@ -194,7 +194,7 @@ private fun DeviceGrid(
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -236,8 +236,8 @@ private fun DeviceCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp)
-                .height(104.dp),
+                .padding(10.dp)
+                .height(90.dp),
         ) {
             // 一级：设备名称（紧凑字号，避免大留白显空）
             Text(
@@ -312,13 +312,13 @@ private fun DeviceGlyph(
         Icon(
             imageVector = device.categoryIcon(),
             contentDescription = null,
-            modifier = Modifier.size(38.dp),
+            modifier = Modifier.size(34.dp),
             tint = tint,
         )
     } else {
         DeviceIconImage(
             model = model,
-            size = 44.dp,
+            size = 40.dp,
             fallback = device.categoryIcon(),
             contentDescription = null,
             contentScale = ContentScale.Fit,
@@ -375,7 +375,7 @@ private fun QuickActionButton(
 }
 
 /** 快捷按钮的直径，同时也是底部操作行的固定高度。 */
-private val QUICK_ACTION_SIZE = 36.dp
+private val QUICK_ACTION_SIZE = 34.dp
 
 /** 卡片底部那行状态文案。整台设备都 unavailable 才算离线。 */
 private fun statusLabel(device: HomeDevice): String {
