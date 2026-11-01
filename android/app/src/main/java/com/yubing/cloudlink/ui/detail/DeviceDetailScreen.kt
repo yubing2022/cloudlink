@@ -546,8 +546,8 @@ private fun EntityControlRow(
 /**
  * 只读实体的展示行。
  *
- * 名字要剥掉设备名前缀：HA 的实体名是「次卧温湿度计 温湿度传感器 温度」，
- * 而这一整页的标题已经写明了是哪台设备，前缀纯属噪音。
+ * 名字只留最后一段语义名（见 [Entity.shortName]）：
+ * 「主卧温湿度计  温湿度传感器 温度」在标题已写明设备的前提下，只剩「温度」是有用信息。
  */
 @Composable
 private fun EntityRow(entity: Entity, deviceName: String) {
@@ -582,9 +582,23 @@ private fun EntityRow(entity: Entity, deviceName: String) {
     }
 }
 
-/** 「次卧温湿度计 温湿度传感器 温度」→「温湿度传感器 温度」。 */
-private fun Entity.shortName(deviceName: String): String =
-    name.removePrefix(deviceName).trim().ifEmpty { name }
+/**
+ * 实体名精简：只留最后一段语义名。
+ *
+ * HA 的实体名常是「设备名 + 品类词 + 语义名」的三段式（实测样例）：
+ *   '主卧温湿度计  温湿度传感器 温度'      → 「温度」
+ *   '次卧温湿度计  电池 电池电量'          → 「电池电量」
+ *   '床头灯 灯光模式'                      → 「灯光模式」（只有一段，原样保留）
+ * 前两段在详情页标题和卡片上已经写明了，留着是纯噪音，这里一律剥掉。
+ *
+ * 注意：中间那段品类词**并非所有实体都有**（上面「床头灯 灯光模式」就是两段），
+ * 所以只能按「取最后一段」处理，不能固定剥第几段。
+ */
+private fun Entity.shortName(deviceName: String): String {
+    val stripped = name.removePrefix(deviceName).trim().ifEmpty { name.trim() }
+    // 分隔符找不到时 substringAfterLast 会返回整个字符串，正好等于「只有一段就原样保留」。
+    return stripped.substringAfterLast(' ').trim().ifEmpty { stripped }
+}
 
 @Composable
 private fun BrightnessSlider(
