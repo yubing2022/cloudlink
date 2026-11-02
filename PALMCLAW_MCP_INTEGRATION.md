@@ -24,7 +24,7 @@
 
 ### 1.3 已确认的事实依据（非推测）
 
-下列结论均来自对 PalmClaw 源码（`/Users/guoyubing/WorkBuddy/PalmClaw`）与 CloudLink 源码（`/Users/guoyubing/Codex/cloudlink`）的实际读取：
+下列结论均来自对 PalmClaw 源码（`/Users/guoyubing/WorkBuddy/PalmClaw`）与 CloudLink 源码（`/Users/guoyubing/WorkBuddy/cloudlink`）的实际读取：
 
 | 事实 | 来源 | 取值 |
 |---|---|---|
@@ -264,4 +264,4 @@ class CloudLinkMcpServer(
 
 ---
 
-*本方案基于 2026-10-18 对 PalmClaw（`ModalityDance/PalmClaw`，已本地克隆编译通过）与 CloudLink（`/Users/guoyubing/Codex/cloudlink`）源码的实测结论整理，供 CloudLink 维护方据此实现。PalmClaw 侧无需任何代码改动。*
+*本方案基于 2026-10-18 对 PalmClaw（`ModalityDance/PalmClaw`，已本地克隆编译通过）与 CloudLink（`/Users/guoyubing/WorkBuddy/cloudlink`）源码的实测结论整理，供 CloudLink 维护方据此实现。PalmClaw 侧无需任何代码改动。*

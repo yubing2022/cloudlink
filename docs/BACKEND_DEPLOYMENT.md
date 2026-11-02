@@ -9,7 +9,7 @@
 后端跑在阿里云 ECS `i-bp17ymd3baklc58tzbth`（`118.31.225.109:8000`），用 `workbench` CLI 通过 OSS 中转部署。日常只需要一条命令：
 
 ```bash
-cd /Users/guoyubing/Codex/cloudlink
+cd /Users/guoyubing/WorkBuddy/cloudlink
 scripts/deploy.sh --status     # 可选：先看要在线上改什么
 scripts/deploy.sh              # 语法检查 → pytest → 上传 → docker cp → 清 __pycache__ → restart → health
 ```
@@ -41,7 +41,7 @@ cloudlink-backend (FastAPI + uvicorn, :8000)
 
 ### 1.2 角色与本机环境
 
-- **Mac（guoyubing 的本机）**：日常开发在这里。`/Users/guoyubing/Codex/cloudlink/` 是工作区。`git` 在这里跑。
+- **Mac（guoyubing 的本机）**：日常开发在这里。`/Users/guoyubing/WorkBuddy/cloudlink/` 是工作区。`git` 在这里跑。
 - **`workbench` CLI** (`/usr/local/bin/workbench`)：阿里云提供的免 SSH 直连 ECS 工具，通过 OSS 中转文件 + 调 ECS API 执行命令。比 SSH 简单，比 SSH 慢。
 - **ECS (`i-bp17ymd3baklc58tzbth`, `118.31.225.109:8000`)**：线上后端。
 - **HA 实例** (`192.168.3.143`)：家里树莓派，HA 跑在这里。cloudlink 集成通过 WSS 连 ECS。
@@ -51,7 +51,7 @@ cloudlink-backend (FastAPI + uvicorn, :8000)
 
 | 路径 | 说明 |
 |---|---|
-| `/Users/guoyubing/Codex/cloudlink/backend/` | 后端代码（git 仓库根下的 `backend/`） |
+| `/Users/guoyubing/WorkBuddy/cloudlink/backend/` | 后端代码（git 仓库根下的 `backend/`） |
 | `/opt/cloudlink/backend/` | ECS 上 `docker-compose.yml` 的工作目录，**代码是 backend 镜像构建时拷进来的副本** |
 | `cloudlink-backend` 容器内 `/app/` | 容器里后端的运行时工作目录（也是 baked in） |
 | `cloudlink-postgres` 容器内 `/var/lib/postgresql/data` | 数据库持久化卷 |
@@ -95,14 +95,14 @@ scripts/deploy.sh backend/app/api/devices.py   # 只部署指定文件
 
 1. **本地改代码 + 跑测试**
    ```bash
-   cd /Users/guoyubing/Codex/cloudlink/backend
+   cd /Users/guoyubing/WorkBuddy/cloudlink/backend
    # 改 app/api/xxx.py 或 app/ws/yyy.py 等
    python3 -m pytest tests/ -q       # 至少 tests/test_devices.py 必跑
    ```
 
 2. **commit + push**
    ```bash
-   cd /Users/guoyubing/Codex/cloudlink
+   cd /Users/guoyubing/WorkBuddy/cloudlink
    git add backend/...
    git diff --cached --stat          # 自检：只动了 backend/，没意外带入 android/ 或 ha-plugin/
    git commit -m "..."
@@ -114,7 +114,7 @@ scripts/deploy.sh backend/app/api/devices.py   # 只部署指定文件
    workbench upload <local_file> /opt/cloudlink/backend/<path> \
      --instance-id i-bp17ymd3baklc58tzbth --force
    ```
-   - `<local_file>` 是 Mac 上的绝对路径，比如 `/Users/guoyubing/Codex/cloudlink/backend/app/api/devices.py`
+   - `<local_file>` 是 Mac 上的绝对路径，比如 `/Users/guoyubing/WorkBuddy/cloudlink/backend/app/api/devices.py`
    - `<path>` 是 ECS 上 `/opt/cloudlink/backend/` 之后的相对路径，比如 `app/api/devices.py`
    - `--force` 覆盖已存在的文件
 
@@ -140,7 +140,7 @@ scripts/deploy.sh backend/app/api/devices.py   # 只部署指定文件
 
 ```bash
 # 假设刚改完 backend/app/api/devices.py
-workbench upload /Users/guoyubing/Codex/cloudlink/backend/app/api/devices.py \
+workbench upload /Users/guoyubing/WorkBuddy/cloudlink/backend/app/api/devices.py \
   /opt/cloudlink/backend/app/api/devices.py --instance-id i-bp17ymd3baklc58tzbth --force && \
 workbench exec --instance-id i-bp17ymd3baklc58tzbth --command \
   "docker cp /opt/cloudlink/backend/app/api/devices.py cloudlink-backend:/app/app/api/devices.py && docker exec cloudlink-backend find /app/app -name __pycache__ -type d -exec rm -rf {} + && docker restart cloudlink-backend" && \
@@ -153,11 +153,11 @@ workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "curl -s -o /dev/n
 可以批量上传，单条 `workbench exec` 一次性 cp 多个文件。例：
 
 ```bash
-workbench upload /Users/guoyubing/Codex/cloudlink/backend/app/api/devices.py \
+workbench upload /Users/guoyubing/WorkBuddy/cloudlink/backend/app/api/devices.py \
   /opt/cloudlink/backend/app/api/devices.py --instance-id i-bp17ymd3baklc58tzbth --force
-workbench upload /Users/guoyubing/Codex/cloudlink/backend/app/api/ws.py \
+workbench upload /Users/guoyubing/WorkBuddy/cloudlink/backend/app/api/ws.py \
   /opt/cloudlink/backend/app/api/ws.py --instance-id i-bp17ymd3baklc58tzbth --force
-workbench upload /Users/guoyubing/Codex/cloudlink/backend/app/ws/manager.py \
+workbench upload /Users/guoyubing/WorkBuddy/cloudlink/backend/app/ws/manager.py \
   /opt/cloudlink/backend/app/ws/manager.py --instance-id i-bp17ymd3baklc58tzbth --force
 
 workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "
@@ -176,7 +176,7 @@ workbench exec --instance-id i-bp17ymd3baklc58tzbth --command "curl -s -o /dev/n
 这些**不**走上面的 `docker cp` 流程。改动后必须重建镜像：
 
 ```bash
-cd /Users/guoyubing/Codex/cloudlink/backend
+cd /Users/guoyubing/WorkBuddy/cloudlink/backend
 # 上传新文件到 ECS
 workbench upload docker-compose.yml /opt/cloudlink/backend/docker-compose.yml --instance-id i-bp17ymd3baklc58tzbth --force
 # 重建并重启（注意 build 会拉镜像、慢一点）
@@ -236,7 +236,7 @@ backend/
 ### 3.2 测试
 
 ```bash
-cd /Users/guoyubing/Codex/cloudlink/backend
+cd /Users/guoyubing/WorkBuddy/cloudlink/backend
 python3 -m pytest tests/test_devices.py -q   # 主回归
 python3 -m pytest tests/ -q                  # 全跑
 ```
@@ -251,7 +251,7 @@ python3 -m pytest tests/ -q                  # 全跑
 ### 3.3 lint / format
 
 ```bash
-cd /Users/guoyubing/Codex/cloudlink/backend
+cd /Users/guoyubing/WorkBuddy/cloudlink/backend
 ruff check app/ tests/
 ruff format app/ tests/
 ```
@@ -322,7 +322,7 @@ f"Domain mismatch: device is {device.domain}, request says {body.domain}",
 仓库**没有 `gradlew`**，用系统 `gradle`；而且默认 `JAVA_HOME` 若是 openjdk 26，`androidJdkImage` 的 jlink 会直接失败。必须切 Android Studio 自带的 JBR：
 
 ```bash
-cd /Users/guoyubing/Codex/cloudlink/android
+cd /Users/guoyubing/WorkBuddy/cloudlink/android
 JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" gradle assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
