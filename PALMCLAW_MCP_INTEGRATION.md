@@ -157,18 +157,21 @@ class CloudLinkMcpServer(
 
 ## 4. 三个 MCP 工具契约
 
-名称建议（PalmClaw 会自动加 `mcp_<serverName>_` 前缀；`serverName` 取 `cloudlink` 时最终为 `mcp_cloudlink_device_list` 等）：
+Tool name（PalmClaw 会自动加 `mcp_<serverName>_` 前缀；`serverName` 取 `cloudlink` 时最终为 `mcp_cloudlink_device_list` 等）：
+
+> 工具名**不带** `cloudlink_` 前缀 —— PalmClaw 自己会加，带上就重复成
+> `mcp_cloudlink_cloudlink_device_list`，小模型对冗长重复的名字更容易选错。
 
 | Tool name | 对应 CloudLink 能力 | 说明 |
 |---|---|---|
-| `cloudlink_device_list` | `listDevices` | 列出设备，支持 area/domain 过滤 |
-| `cloudlink_device_get_state` | `getState` | 取单个设备/实体状态 |
-| `cloudlink_device_control` | `control` | 下发控制（domain/service/data） |
+| `device_list` | `listDevices` | 列出设备，支持 area/domain 过滤 |
+| `device_get_state` | `getState` | 取单个设备/实体状态 |
+| `device_control` | `control` | 下发控制（domain/service/data） |
 
-`inputSchema`（骨架，字段名/描述/required **以 `CloudLinkCapabilityService` 现有实现为准**，保持一致）：
+`inputSchema`（骨架，字段名/描述/required **以 `DeviceToolSchema` 现有实现为准**，保持一致）：
 
 ```jsonc
-// cloudlink_device_list
+// device_list
 {
   "type": "object",
   "properties": {
@@ -178,7 +181,7 @@ class CloudLinkMcpServer(
   "required": []
 }
 
-// cloudlink_device_get_state
+// device_get_state
 {
   "type": "object",
   "properties": {
@@ -187,7 +190,7 @@ class CloudLinkMcpServer(
   "required": ["entity_id"]
 }
 
-// cloudlink_device_control
+// device_control
 {
   "type": "object",
   "properties": {

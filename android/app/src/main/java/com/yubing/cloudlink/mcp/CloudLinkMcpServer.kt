@@ -151,9 +151,13 @@ class CloudLinkMcpServer(
             .put("serverInfo", JSONObject().put("name", SERVER_NAME).put("version", versionName))
             .put(
                 "instructions",
-                "先用 cloudlink_device_list 拿到 entity_id 与 domain（不要凭猜测构造），" +
-                    "再用 cloudlink_device_control 控制；只查状态用 cloudlink_device_get_state。" +
-                    "出错时结果文本里有 error_code，按它修正参数，而不是原样重试。",
+                // 工具名一律引用常量，别在这里手写 —— 手写过一轮，改名就漂了。
+                "先用 ${DeviceToolSchema.LIST} 拿到 entity_id 与 domain（不要凭猜测构造），" +
+                    "再用 ${DeviceToolSchema.CONTROL} 控制；只查状态用 ${DeviceToolSchema.GET_STATE}。" +
+                    "${DeviceToolSchema.LIST} 的 area/domain 是可选过滤条件，" +
+                    "用户没指定就别传（更不要传 null 或空对象），不传就是全部设备。" +
+                    "出错时结果文本里有 error_code，按它修正参数，而不是原样重试" +
+                    "（INVALID_PARAMS 是类型/写法错，INVALID_FILTER 是过滤值不存在）。",
             )
     }
 

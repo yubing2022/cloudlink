@@ -17,10 +17,17 @@ object DeviceToolSchema {
 
     // ------------------------------------------------------------------ names
 
-    /** MCP tool 名。PalmClaw 会加 `mcp_<serverName>_` 前缀（serverName=cloudlink）。 */
-    const val LIST = "cloudlink_device_list"
-    const val GET_STATE = "cloudlink_device_get_state"
-    const val CONTROL = "cloudlink_device_control"
+    /**
+     * MCP tool 名。
+     *
+     * 不带 `cloudlink_` 前缀：PalmClaw 会自动加 `mcp_<serverName>_` 前缀
+     * （serverName=cloudlink），带上前缀会变成 `mcp_cloudlink_cloudlink_device_list`
+     * 这种重复两次的名字 —— 既难看，小模型对冗长重复的名字也更容易选错。
+     * 现在是 `mcp_cloudlink_device_list`。
+     */
+    const val LIST = "device_list"
+    const val GET_STATE = "device_get_state"
+    const val CONTROL = "device_control"
 
     /** AgentBridge capability id（保留历史命名空间，与 MCP tool 名并存）。 */
     const val CAP_LIST = "cloudlink.device.list@v1"
