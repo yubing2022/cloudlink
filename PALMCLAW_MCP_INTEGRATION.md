@@ -165,28 +165,26 @@ Tool name（PalmClaw 会自动加 `mcp_<serverName>_` 前缀；`serverName` 取 
 | Tool name | 对应 CloudLink 能力 | 说明 |
 |---|---|---|
 | `device_list` | `listDevices` | 列出设备（**零参数**），返回设备 + 可控实体 |
-| `device_entities` | `listEntities` | 按设备名钻取该设备的全部实体（含只读传感器） |
+| `device_entities` | `listEntities` | 列出实体（含只读传感器），可按 device_name / area / domain 过滤（**三者全可选**） |
 | `device_get_state` | `getState` | 取单个设备/实体状态 |
 | `device_control` | `control` | 下发控制（domain/service/data） |
 
-### 为什么 `device_list` 是零参数的
+### 为什么过滤参数放在 `device_entities` 而不是 `device_list`
 
-给端侧小模型用时踩过两个坑，都用「结构」而不是「文案」来治：
+两个目标要同时满足：**弱模型**不该被可选参数坑到，**大模型**也不该为一次带条件的
+检索多绕一轮。
 
-1. **模型看到可填的 string 属性就会去填**。原本 `area` / `domain` 是可选的，
-   但小模型读到 schema 里有两个 string 属性，就认为「必须填」，于是反问用户
-   「您希望查看哪个区域（area）和哪个领域（domain）」——而一次不带过滤的
-   list 本来就能回答。**把属性彻底删掉，模型就没有可问的东西了。**
-   区域信息本来就在每台设备的 `area` 字段里，模型自己就能挑。
-2. **返回体太大会把小模型的上下文吃掉**。HA 的实体清单里塞满与决策无关的噪音
-   （打印机的碳粉余量、重复的 `friendly_name`、`supported_features`）。
-   实测本机 14 台设备 / 91 个实体，全量返回 **22KB ≈ 8~11K token**，
-   一次列表就把上下文吃掉大半，之后它就开始胡说。
+- `device_list` 保持**零属性**：它是「有哪些设备」的入口，一旦带上面可填属性，
+  小模型就会认为必须填，转而去反问用户要区域（实测踩过）。
+- 过滤能力放在 `device_entities` 的**三个全可选参数**上：
+  - 弱模型路径：「有哪些设备」→ `device_list{}`，根本不碰 `device_entities`；
+  - 大模型路径：「客厅的灯」→ `device_entities(area="客厅", domain="light")`，
+    **一次调用**就拿到目标实体，比 list → entities 两轮更干净；
+  - 「有哪些传感器」→ `device_entities(domain="sensor")`，也是一次调用，
+    不必对每台设备各调一次。
 
-所以 `device_list` 现在返回**紧凑版**：设备信息 + 只展开**能控制的**实体
-（只读实体只给 `readonly_count`），实体只留 `entity_id/domain/name/state`，
-`attributes` 全部丢弃（要属性用 `device_get_state` 单查）。
-需要只读传感器的 `entity_id` 时，用 `device_entities` 按设备名钻取。
+> `device_entities` 的三个参数全部可选、且都支持 null 容错（null 等同于不传），
+> 所以弱模型误传 null 也不会报错。
 
 `inputSchema`（骨架，字段名/描述/required **以 `DeviceToolSchema` 现有实现为准**，保持一致）：
 
@@ -197,13 +195,14 @@ Tool name（PalmClaw 会自动加 `mcp_<serverName>_` 前缀；`serverName` 取 
   "properties": {}
 }
 
-// device_entities
+// device_entities —— 三个参数全可选，全都不传 = 全部实体
 {
   "type": "object",
   "properties": {
-    "device_name": { "type": "string", "description": "设备名，用 device_list 返回里的 name 原样填写" }
-  },
-  "required": ["device_name"]
+    "device_name": { "type": "string", "description": "可选。设备名，如 '主卧温湿度计'" },
+    "area":        { "type": "string", "description": "可选。区域名，如 '客厅'" },
+    "domain":      { "type": "string", "description": "可选。实体域，如 'light'/'sensor'" }
+  }
 }
 
 // device_get_state

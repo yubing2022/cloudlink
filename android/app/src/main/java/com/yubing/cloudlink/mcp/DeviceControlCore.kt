@@ -101,51 +101,100 @@ class DeviceControlCore @Inject constructor(
     }
 
     /**
-     * 列出**某台设备**的全部实体（含只读传感器），用于钻取 entity_id。
+     * 列出实体（含只读传感器），可按 **device_name / area / domain** 过滤，
+     * 三个参数**全部可选**，全都不传就是全部实体。
      *
-     * [listDevices] 只展开可控制的实体，只读实体只给个计数 —— 因为它们占了大半
-     * 体积却对「控制」没用。但用户问「主卧温度多少」时又必须能拿到温湿度计的
-     * entity_id，所以留了这个按设备名钻取的入口。
+     * 为什么要把过滤放在这里、而不是放回 [listDevices]：
+     * - [listDevices] 是「有哪些设备」的入口，必须**零参数**。一旦它带上可填属性，
+     *   弱模型就会认为必须填，转而去反问用户要区域（实测踩过）。
+     * - 过滤能力本身不能丢 —— 大模型做「查客厅的灯」这类检索时，
+     *   一次 `device_entities(area="客厅", domain="light")` 就够，比
+     *   list → entities 两轮更干净。
      *
-     * 设备名先精确匹配、再忽略大小写、最后包含匹配；都不中就把可用设备名列出来
-     * （与 INVALID_FILTER 的既有风格一致：别让调用方把拼写错误当成事实）。
+     * 匹配规则：device_name 先精确、再忽略大小写、最后包含；
+     * area / domain 忽略大小写精确匹配。不中就把可用取值列出来
+     * （别让调用方把拼写错误当成事实结论）。
      *
-     * @throws CapError ENTITY_NOT_FOUND（设备名不存在）、NOT_AUTHENTICATED
+     * @throws CapError ENTITY_NOT_FOUND（设备名不存在）、INVALID_FILTER（区域/domain 不存在）
      */
-    suspend fun listEntities(deviceNameRaw: String): JSONObject {
+    suspend fun listEntities(deviceNameRaw: String, areaRaw: String, domainRaw: String): JSONObject {
         val token = requireToken()
-        val want = deviceNameRaw.trim()
-        if (want.isEmpty()) {
-            throw CapError(INVALID_PARAMS, "缺少必填参数 device_name。正确写法：\"主卧温湿度计\"")
-        }
+        val wantName = deviceNameRaw.trim()
+        val wantArea = areaRaw.trim()
+        val wantDomain = domainRaw.trim().lowercase()
+
         val devices = api.listDevices(token).filter { it.entities.isNotEmpty() }
-        val hit = devices.firstOrNull { it.name == want }
-            ?: devices.firstOrNull { it.name.equals(want, ignoreCase = true) }
-            ?: devices.firstOrNull { it.name.contains(want, ignoreCase = true) }
-        if (hit == null) {
-            val names = devices.map { it.name }.sorted()
-            throw CapError(
-                ENTITY_NOT_FOUND,
-                "device_name=$want 不存在。可用设备名：${names.joinToString(" / ")}",
-            )
+
+        if (wantName.isNotEmpty()) {
+            val hit = devices.firstOrNull { it.name == wantName }
+                ?: devices.firstOrNull { it.name.equals(wantName, ignoreCase = true) }
+                ?: devices.firstOrNull { it.name.contains(wantName, ignoreCase = true) }
+            if (hit == null) {
+                val names = devices.map { it.name }.sorted()
+                throw CapError(
+                    ENTITY_NOT_FOUND,
+                    "device_name=$wantName 不存在。可用设备名：${names.joinToString(" / ")}",
+                )
+            }
+            return JSONObject()
+                .put("count", hit.entities.size)
+                .put("devices", JSONArray().put(deviceJson(hit, hit.entities)))
         }
-        val entities = JSONArray()
-        for (e in hit.entities) {
-            entities.put(
-                JSONObject()
-                    .put("entity_id", e.entity_id)
-                    .put("domain", e.domain)
-                    .put("name", e.name)
-                    .put("state", e.state)
-                    .put("controllable", e.domain.lowercase() !in READ_ONLY_DOMAINS),
-            )
+
+        // 按区域过滤：列的是「有实体的设备所属区域」，与 listDevices 的口径一致。
+        if (wantArea.isNotEmpty()) {
+            val areas = devices.mapNotNull { it.area?.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
+            if (areas.none { it.equals(wantArea, ignoreCase = true) }) {
+                throw CapError(
+                    INVALID_FILTER,
+                    "area=$wantArea 不存在。可用 area：${areas.joinToString(" / ")}；不传 area 表示全部",
+                )
+            }
         }
-        return JSONObject()
-            .put("device", hit.name)
-            .put("area", hit.area)
-            .put("entity_count", hit.entities.size)
-            .put("entities", entities)
+        if (wantDomain.isNotEmpty()) {
+            val domains = devices.flatMap { it.entities }.map { it.domain.lowercase() }.distinct().sorted()
+            if (wantDomain !in domains) {
+                throw CapError(
+                    INVALID_FILTER,
+                    "domain=$wantDomain 不存在。可用 domain：${domains.joinToString(" / ")}；不传 domain 表示全部",
+                )
+            }
+        }
+
+        val matched = devices.filter { d ->
+            (wantArea.isEmpty() || (d.area ?: "").equals(wantArea, ignoreCase = true)) &&
+                d.entities.any { wantDomain.isEmpty() || it.domain.lowercase() == wantDomain }
+        }
+        val arr = JSONArray()
+        var total = 0
+        for (d in matched) {
+            val picked = d.entities.filter { wantDomain.isEmpty() || it.domain.lowercase() == wantDomain }
+            total += picked.size
+            arr.put(deviceJson(d, picked))
+        }
+        return JSONObject().put("count", total).put("devices", arr)
     }
+
+    /** 单台设备的实体块。两条过滤分支共用，保证输出结构完全一致。 */
+    private fun deviceJson(
+        device: com.yubing.cloudlink.data.model.HomeDevice,
+        entities: List<com.yubing.cloudlink.data.model.Entity>,
+    ): JSONObject = JSONObject()
+        .put("device", device.name)
+        .put("area", device.area)
+        .put("entity_count", entities.size)
+        .put("entities", JSONArray().apply {
+            for (e in entities) {
+                put(
+                    JSONObject()
+                        .put("entity_id", e.entity_id)
+                        .put("domain", e.domain)
+                        .put("name", e.name)
+                        .put("state", e.state)
+                        .put("controllable", e.domain.lowercase() !in READ_ONLY_DOMAINS),
+                )
+            }
+        })
 
     /**
      * @throws CapError INVALID_PARAMS、ENTITY_NOT_FOUND、NOT_AUTHENTICATED

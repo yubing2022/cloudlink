@@ -56,12 +56,14 @@ object DeviceToolSchema {
             "要控制设备，从返回的 entities[] 里取 entity_id 与 domain，再调用控制工具。"
 
     const val DESC_ENTITIES =
-        "列出**某台设备**的全部实体（含只读传感器），用于拿到 entity_id。" +
-            "返回 {device, area, entity_count, entities[]}，每项含 " +
-            "entity_id/domain/name/state/controllable（controllable=false 表示只读，不能控制）。" +
-            "device_name 用「列出设备」工具返回里的设备名原样填写。" +
-            "只有当你要控制某个只读传感器、或需要设备完整实体清单时才调用本工具；" +
-            "只是想看有哪些设备的话，用「列出设备」工具就够了。"
+        "列出实体（含只读传感器），可按 device_name / area / domain 过滤，" +
+            "**三个参数全部可选，全都不传就是全部实体**。" +
+            "返回 {count, devices[]}，每台设备含 device/area/entity_count/entities[]，" +
+            "每个实体含 entity_id/domain/name/state/controllable" +
+            "（controllable=false 表示只读，不能控制）。" +
+            "典型用法：查某个区域的某类设备 → device_name 省略、传 area + domain；" +
+            "查某台设备的完整实体 → 传 device_name（用「列出设备」返回里的 name 原样填写）。" +
+            "只是想看有哪些设备的话，用「列出设备」工具就够了（零参数）。"
 
     const val DESC_GET_STATE =
         "获取单个设备实体的当前状态与属性（如灯是否开、亮度值、空调设定温度）。" +
@@ -87,7 +89,7 @@ object DeviceToolSchema {
         """{"type":"object","properties":{}}"""
 
     const val INPUT_ENTITIES =
-        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名，用「列出设备」工具返回里的 name 原样填写（如 \"主卧温湿度计\"）。不要写 entity_id，不要自己编。"}},"required":["device_name"]}"""
+        """{"type":"object","properties":{"device_name":{"type":"string","description":"可选。设备名，用「列出设备」工具返回里的 name 原样填写（如 \"主卧温湿度计\"）。不要写 entity_id，不要自己编。不传=全部设备。"},"area":{"type":"string","description":"可选。区域名，如 客厅。不传=全部区域。未知值返回 INVALID_FILTER 并附可用 area 列表。"},"domain":{"type":"string","description":"可选。实体 domain，如 light / sensor / switch。不传=全部 domain。未知值返回 INVALID_FILTER 并附可用 domain 列表。"}}}"""
 
     const val INPUT_GET_STATE =
         """{"type":"object","properties":{"entity_id":{"type":"string","description":"实体 ID。必须先用「列出设备」或「列出设备实体」工具获取（形如 light.yeelink_cn_1208334138_mbulb3_s_2，全小写带 domain 前缀），不要凭猜测构造。大小写不敏感（内部统一转小写）。"}},"required":["entity_id"]}"""
@@ -102,7 +104,7 @@ object DeviceToolSchema {
         """{"type":"object","properties":{"count":{"type":"integer"},"devices":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"},"area":{"type":"string","description":"可能为 null"},"manufacturer":{"type":"string","description":"可能为 null"},"model":{"type":"string","description":"可能为 null"},"domains":{"type":"array","items":{"type":"string"}},"entity_count":{"type":"integer"},"readonly_count":{"type":"integer"},"entities":{"type":"array","items":{"type":"object","properties":{"entity_id":{"type":"string"},"domain":{"type":"string"},"name":{"type":"string"},"state":{"type":"string"}}}}}}}}}"""
 
     const val OUTPUT_ENTITIES =
-        """{"type":"object","properties":{"device":{"type":"string"},"area":{"type":"string","description":"可能为 null"},"entity_count":{"type":"integer"},"entities":{"type":"array","items":{"type":"object","properties":{"entity_id":{"type":"string"},"domain":{"type":"string"},"name":{"type":"string"},"state":{"type":"string"},"controllable":{"type":"boolean"}}}}}}"""
+        """{"type":"object","properties":{"count":{"type":"integer"},"devices":{"type":"array","items":{"type":"object","properties":{"device":{"type":"string"},"area":{"type":"string","description":"可能为 null"},"entity_count":{"type":"integer"},"entities":{"type":"array","items":{"type":"object","properties":{"entity_id":{"type":"string"},"domain":{"type":"string"},"name":{"type":"string"},"state":{"type":"string"},"controllable":{"type":"boolean"}}}}}}}}}"""
 
     const val OUTPUT_STATE =
         """{"type":"object","properties":{"entity_id":{"type":"string"},"state":{"type":"string"},"attributes":{"type":"object"},"last_state_change":{"type":"string","description":"ISO8601，可能为 null"}}}"""

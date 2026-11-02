@@ -184,8 +184,11 @@ class CloudLinkMcpServer(
                 when (name) {
                     DeviceToolSchema.LIST -> core.listDevices()
 
-                    DeviceToolSchema.ENTITIES ->
-                        core.listEntities(core.requiredString(args, "device_name", "\"主卧温湿度计\""))
+                    DeviceToolSchema.ENTITIES -> core.listEntities(
+                        core.optionalString(args, "device_name", "\"主卧温湿度计\""),
+                        core.optionalString(args, "area", "\"客厅\""),
+                        core.optionalString(args, "domain", "\"light\""),
+                    )
 
                     DeviceToolSchema.GET_STATE ->
                         core.getState(core.requiredString(args, "entity_id", "\"light.xx_yy\""))

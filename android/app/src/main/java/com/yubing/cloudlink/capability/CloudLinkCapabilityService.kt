@@ -138,7 +138,9 @@ class CloudLinkCapabilityService : AgentBridgeFunctionProviderService() {
                     "device.list@v1" -> deps.core().listDevices()
 
                     "device.entities@v1" -> deps.core().listEntities(
-                        deps.core().requiredString(input, "device_name", "\"主卧温湿度计\""),
+                        deps.core().optionalString(input, "device_name", "\"主卧温湿度计\""),
+                        deps.core().optionalString(input, "area", "\"客厅\""),
+                        deps.core().optionalString(input, "domain", "\"light\""),
                     )
 
                     "device.get_state@v1" ->
