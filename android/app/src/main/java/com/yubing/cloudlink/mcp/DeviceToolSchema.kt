@@ -26,26 +26,42 @@ object DeviceToolSchema {
      * 现在是 `mcp_cloudlink_device_list`。
      */
     const val LIST = "device_list"
+    const val ENTITIES = "device_entities"
     const val GET_STATE = "device_get_state"
     const val CONTROL = "device_control"
 
     /** AgentBridge capability id（保留历史命名空间，与 MCP tool 名并存）。 */
     const val CAP_LIST = "cloudlink.device.list@v1"
+    const val CAP_ENTITIES = "cloudlink.device.entities@v1"
     const val CAP_GET_STATE = "cloudlink.device.get_state@v1"
     const val CAP_CONTROL = "cloudlink.device.control@v1"
 
     // ---------------------------------------------------------- descriptions
 
+    /**
+     * 列出设备 —— **零参数**。
+     *
+     * 措辞是给弱模型看的，所以反过来写：不是「你可以传 area/domain」，而是
+     * 「**本工具不需要任何参数，直接调用**」。模型看到 schema 里有可填的
+     * string 属性就会以为必须填，然后反问用户要区域名；把属性彻底去掉，
+     * 它就没有可问的东西了。
+     */
     const val DESC_LIST =
-        "列出已接入 CloudLink 的智能家居设备及其实体（entity）。返回 {count, devices[]}：" +
-            "devices[] 每项含 id/name/area/manufacturer/model/entities[]，" +
-            "entities[] 每项含 entity_id/domain/name/state/attributes。" +
-            "只返回至少含一个实体的设备；HA 集成/add-on 这类无实体的条目已被剔除。" +
-            "【重要】area 与 domain 都是可选的过滤条件：用户没有指定房间或设备类型时，" +
-            "直接省略这两个参数调用本工具即可（不要传 null、空字符串或空对象，也不要为此反问用户——" +
-            "不传就是全部设备）。只有用户明确说了「卧室的灯」这类过滤时才填。" +
-            "传入不存在的过滤值会返回 INVALID_FILTER 并列出可用值，不会静默返回空列表。" +
-            "要控制设备，先用本工具取 entity_id 与 domain，再调用控制工具。"
+        "列出已接入 CloudLink 的智能家居设备。返回 {count, devices[]}，" +
+            "每台设备含 name/area/manufacturer/model/domains/entity_count/readonly_count/entities[]。" +
+            "entities[] 只列**能控制的**实体（灯、插座、空调、音箱等），每项含 " +
+            "entity_id/domain/name/state；只读实体（温湿度计、传感器）只给 readonly_count，" +
+            "需要它们的 entity_id 时再调用「列出设备实体」工具。" +
+            "【重要】本工具**不需要任何参数，直接调用即可**，不要反问用户要区域或类型。" +
+            "要控制设备，从返回的 entities[] 里取 entity_id 与 domain，再调用控制工具。"
+
+    const val DESC_ENTITIES =
+        "列出**某台设备**的全部实体（含只读传感器），用于拿到 entity_id。" +
+            "返回 {device, area, entity_count, entities[]}，每项含 " +
+            "entity_id/domain/name/state/controllable（controllable=false 表示只读，不能控制）。" +
+            "device_name 用「列出设备」工具返回里的设备名原样填写。" +
+            "只有当你要控制某个只读传感器、或需要设备完整实体清单时才调用本工具；" +
+            "只是想看有哪些设备的话，用「列出设备」工具就够了。"
 
     const val DESC_GET_STATE =
         "获取单个设备实体的当前状态与属性（如灯是否开、亮度值、空调设定温度）。" +
@@ -62,11 +78,19 @@ object DeviceToolSchema {
 
     // ----------------------------------------------------------- inputSchema
 
+    /**
+     * 零属性 —— 不是漏了，是刻意的。
+     * 一旦这里出现任何可填属性，弱模型就会去凑值；把「填什么」的决策权
+     * 全部交回服务端（用 device_entities 按设备名钻取），模型只需无参调用。
+     */
     const val INPUT_LIST =
-        """{"type":"object","properties":{"area":{"type":"string","description":"房间/区域过滤，大小写不敏感（如 客厅）。可选参数：不需要过滤就省略本参数，不要传 null/空对象/空字符串。不传=全部设备。未知值返回 INVALID_FILTER 并附可用 area 列表。"},"domain":{"type":"string","description":"实体 domain 过滤，大小写不敏感。可选参数：不需要过滤就省略本参数，不要传 null/空对象/空字符串。不传=全部设备。本账号实际出现的 domain：light / switch / climate / media_player / number / select / text / button / sensor / binary_sensor（以设备实际接入为准）。未知值返回 INVALID_FILTER 并附可用 domain 列表。"}}}"""
+        """{"type":"object","properties":{}}"""
+
+    const val INPUT_ENTITIES =
+        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名，用「列出设备」工具返回里的 name 原样填写（如 \"主卧温湿度计\"）。不要写 entity_id，不要自己编。"}},"required":["device_name"]}"""
 
     const val INPUT_GET_STATE =
-        """{"type":"object","properties":{"entity_id":{"type":"string","description":"实体 ID。必须先用「列出设备」工具获取（形如 light.yeelink_cn_1208334138_mbulb3_s_2，全小写带 domain 前缀），不要凭猜测构造。大小写不敏感（内部统一转小写）。"}},"required":["entity_id"]}"""
+        """{"type":"object","properties":{"entity_id":{"type":"string","description":"实体 ID。必须先用「列出设备」或「列出设备实体」工具获取（形如 light.yeelink_cn_1208334138_mbulb3_s_2，全小写带 domain 前缀），不要凭猜测构造。大小写不敏感（内部统一转小写）。"}},"required":["entity_id"]}"""
 
     const val INPUT_CONTROL =
         """{"type":"object","properties":{"entity_id":{"type":"string","description":"目标实体 ID，形如 light.yeelink_cn_1208334138_mbulb3_s_2（全小写）。必须先用「列出设备」工具获取，不要凭猜测构造。大小写不敏感。"},"domain":{"type":"string","description":"实体 domain，必须与 entity_id 的前缀一致（light.xxx → light，switch.xxx → switch）。服务端只校验不推断，不一致返回 DOMAIN_MISMATCH。大小写不敏感。常见值：light / switch / climate / media_player / number / select / text / button。"},"service":{"type":"string","description":"HA service 名，大小写不敏感。各 domain 常用 service：light、switch → turn_on / turn_off / toggle；climate → set_temperature / set_hvac_mode / turn_on / turn_off；media_player → volume_set / media_play / media_pause / turn_on / turn_off；number → set_value；select → select_option；text → set_value；button → press。sensor / binary_sensor 为只读域，没有可调用的 service。传错时返回 SERVICE_NOT_FOUND，并在 message 里附该 domain 可用的 service。"},"data":{"type":"object","description":"service 参数，必须是 JSON 对象（object），不能是字符串。key 必须是该 service 的真实字段名：HA 对未知字段多数情况静默忽略（部分 service 会直接报错，如 light 会提示 did you mean ...）；疑似拼错时返回结果里的 warnings 也会提示。例：{\"brightness\":200,\"color_temp_kelvin\":3000}。边界：brightness 有效范围 1-255，超出由 HA clamp 到 255；brightness=0 等同关灯。不需要额外参数时省略本参数，不要传 null。"}},"required":["entity_id","domain","service"]}"""
@@ -75,7 +99,10 @@ object DeviceToolSchema {
     // AgentBridge 需要 outputSchema（用于结果契约）；MCP 侧不需要，结果直接是 JSON 文本。
 
     const val OUTPUT_LIST =
-        """{"type":"object","properties":{"count":{"type":"integer"},"devices":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"},"area":{"type":"string","description":"可能为 null"},"manufacturer":{"type":"string","description":"可能为 null"},"model":{"type":"string","description":"可能为 null"},"entities":{"type":"array","items":{"type":"object","properties":{"entity_id":{"type":"string"},"domain":{"type":"string"},"name":{"type":"string"},"state":{"type":"string"},"attributes":{"type":"object"}}}}}}}}}"""
+        """{"type":"object","properties":{"count":{"type":"integer"},"devices":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"},"area":{"type":"string","description":"可能为 null"},"manufacturer":{"type":"string","description":"可能为 null"},"model":{"type":"string","description":"可能为 null"},"domains":{"type":"array","items":{"type":"string"}},"entity_count":{"type":"integer"},"readonly_count":{"type":"integer"},"entities":{"type":"array","items":{"type":"object","properties":{"entity_id":{"type":"string"},"domain":{"type":"string"},"name":{"type":"string"},"state":{"type":"string"}}}}}}}}}"""
+
+    const val OUTPUT_ENTITIES =
+        """{"type":"object","properties":{"device":{"type":"string"},"area":{"type":"string","description":"可能为 null"},"entity_count":{"type":"integer"},"entities":{"type":"array","items":{"type":"object","properties":{"entity_id":{"type":"string"},"domain":{"type":"string"},"name":{"type":"string"},"state":{"type":"string"},"controllable":{"type":"boolean"}}}}}}"""
 
     const val OUTPUT_STATE =
         """{"type":"object","properties":{"entity_id":{"type":"string"},"state":{"type":"string"},"attributes":{"type":"object"},"last_state_change":{"type":"string","description":"ISO8601，可能为 null"}}}"""
@@ -89,6 +116,7 @@ object DeviceToolSchema {
      */
     val MCP_TOOLS: List<Triple<String, String, String>> = listOf(
         Triple(LIST, DESC_LIST, INPUT_LIST),
+        Triple(ENTITIES, DESC_ENTITIES, INPUT_ENTITIES),
         Triple(GET_STATE, DESC_GET_STATE, INPUT_GET_STATE),
         Triple(CONTROL, DESC_CONTROL, INPUT_CONTROL),
     )

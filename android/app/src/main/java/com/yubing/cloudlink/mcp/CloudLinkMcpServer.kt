@@ -152,12 +152,14 @@ class CloudLinkMcpServer(
             .put(
                 "instructions",
                 // 工具名一律引用常量，别在这里手写 —— 手写过一轮，改名就漂了。
-                "先用 ${DeviceToolSchema.LIST} 拿到 entity_id 与 domain（不要凭猜测构造），" +
-                    "再用 ${DeviceToolSchema.CONTROL} 控制；只查状态用 ${DeviceToolSchema.GET_STATE}。" +
-                    "${DeviceToolSchema.LIST} 的 area/domain 是可选过滤条件，" +
-                    "用户没指定就别传（更不要传 null 或空对象），不传就是全部设备。" +
+                "问「有哪些设备/设备叫什么」→ 直接调用 ${DeviceToolSchema.LIST}，" +
+                    "它**不需要任何参数**，不要反问用户要区域或类型。" +
+                    "要控制设备 → 从 ${DeviceToolSchema.LIST} 返回的 entities[] 里取 " +
+                    "entity_id 与 domain，再调用 ${DeviceToolSchema.CONTROL}；" +
+                    "只查状态用 ${DeviceToolSchema.GET_STATE}；" +
+                    "需要只读传感器（温湿度计等）的 entity_id 时用 ${DeviceToolSchema.ENTITIES}。" +
                     "出错时结果文本里有 error_code，按它修正参数，而不是原样重试" +
-                    "（INVALID_PARAMS 是类型/写法错，INVALID_FILTER 是过滤值不存在）。",
+                    "（INVALID_PARAMS 是类型/写法错，ENTITY_NOT_FOUND 是名字或 ID 不存在）。",
             )
     }
 
@@ -180,10 +182,10 @@ class CloudLinkMcpServer(
         return try {
             val result = runBlocking {
                 when (name) {
-                    DeviceToolSchema.LIST -> core.listDevices(
-                        core.optionalString(args, "area", "\"客厅\""),
-                        core.optionalString(args, "domain", "\"light\""),
-                    )
+                    DeviceToolSchema.LIST -> core.listDevices()
+
+                    DeviceToolSchema.ENTITIES ->
+                        core.listEntities(core.requiredString(args, "device_name", "\"主卧温湿度计\""))
 
                     DeviceToolSchema.GET_STATE ->
                         core.getState(core.requiredString(args, "entity_id", "\"light.xx_yy\""))

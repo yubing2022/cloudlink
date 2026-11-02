@@ -89,6 +89,18 @@ class CloudLinkCapabilityService : AgentBridgeFunctionProviderService() {
         caps.add(
             CapabilitySchemas.fromJson(
                 JSONObject()
+                    .put("capabilityId", DeviceToolSchema.CAP_ENTITIES)
+                    .put("namespace", NAMESPACE)
+                    .put("name", "device.entities")
+                    .put("version", "1.0")
+                    .put("description", DeviceToolSchema.DESC_ENTITIES)
+                    .put("inputSchema", DeviceToolSchema.INPUT_ENTITIES)
+                    .put("outputSchema", DeviceToolSchema.OUTPUT_ENTITIES),
+            ),
+        )
+        caps.add(
+            CapabilitySchemas.fromJson(
+                JSONObject()
                     .put("capabilityId", DeviceToolSchema.CAP_GET_STATE)
                     .put("namespace", NAMESPACE)
                     .put("name", "device.get_state")
@@ -123,9 +135,10 @@ class CloudLinkCapabilityService : AgentBridgeFunctionProviderService() {
             val input = parseJsonArgs(args)
             val result = runBlocking {
                 when (capabilityId.removePrefix("$NAMESPACE.")) {
-                    "device.list@v1" -> deps.core().listDevices(
-                        deps.core().optionalString(input, "area", "\"客厅\""),
-                        deps.core().optionalString(input, "domain", "\"light\""),
+                    "device.list@v1" -> deps.core().listDevices()
+
+                    "device.entities@v1" -> deps.core().listEntities(
+                        deps.core().requiredString(input, "device_name", "\"主卧温湿度计\""),
                     )
 
                     "device.get_state@v1" ->

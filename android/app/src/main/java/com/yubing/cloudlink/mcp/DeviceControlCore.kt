@@ -35,12 +35,26 @@ class DeviceControlCore @Inject constructor(
     // --------------------------------------------------------------- actions
 
     /**
-     * @throws CapError INVALID_FILTER（过滤值不存在或组合为空）、NOT_AUTHENTICATED
+     * 列出设备（**紧凑版**，无过滤参数）。
+     *
+     * 为什么做成「紧凑 + 零参数」，而不是把全量实体一次倒给调用方：
+     *
+     * 1) **上下文**：HA 的实体清单里塞满与决策无关的噪音（打印机的碳粉余量、
+     *    重复的 friendly_name、supported_features …）。实测本机 14 台设备 / 91 个实体，
+     *    全量返回 **22KB ≈ 8~11K token** —— 一次列表就能把端侧小模型的上下文吃掉大半，
+     *    之后它就开始胡说（反问用户要参数、叫错工具名）。
+     *    现在只返回「设备 + 能控制的实体」，实测降到 ~5KB；要属性用 [getState]
+     *    单查，要只读实体用 [listEntities] 钻取。
+     *
+     * 2) **别让模型填空**：过滤参数（area/domain）曾经是可选的，但模型看到
+     *    schema 里有两个 string 属性就会认为「必须填」，于是反问用户要区域名。
+     *    把过滤彻底移出 list，模型就没有可问的东西了 —— 区域信息本来就在
+     *    每台设备的 area 字段里，模型自己就能挑。
+     *
+     * @throws CapError NOT_AUTHENTICATED
      */
-    suspend fun listDevices(areaRaw: String, domainRaw: String): JSONObject {
+    suspend fun listDevices(): JSONObject {
         val token = requireToken()
-        val area = areaRaw.trim()
-        val domain = domainRaw.trim().lowercase()
         val all = api.listDevices(token)
 
         // 云端 HADevice 是 HA 设备注册表的全量镜像，里面混着集成 hub 设备
@@ -53,65 +67,21 @@ class DeviceControlCore @Inject constructor(
             Log.i(TAG, "list: dropped ${all.size - devices.size} devices with 0 entities (${all.size} → ${devices.size})")
         }
 
-        val availableAreas = devices.mapNotNull { it.area?.trim() }
-            .filter { it.isNotEmpty() }.distinct().sorted()
-        val availableDomains = devices.flatMap { it.entities }
-            .map { it.domain.lowercase() }.distinct().sorted()
-
-        // 过滤值写错时，旧实现返回 {"count":0,"devices":[]} —— 和「这个房间
-        // 真的没有设备」完全无法区分，调用方会把拼写错误当成事实结论。
-        // 现在直接报错并列出真实存在的取值。
-        if (area.isNotEmpty() && availableAreas.none { it.equals(area, ignoreCase = true) }) {
-            throw CapError(
-                INVALID_FILTER,
-                if (availableAreas.isEmpty()) {
-                    "area=$area 无法匹配：该账号下没有任何设备（请先在 CloudLink App 完成登录与 HA 绑定）"
-                } else {
-                    "area=$area 不存在。可用 area：${availableAreas.joinToString(" / ")}；不传 area 表示全部"
-                },
-            )
-        }
-        if (domain.isNotEmpty() && domain !in availableDomains) {
-            throw CapError(
-                INVALID_FILTER,
-                if (availableDomains.isEmpty()) {
-                    "domain=$domain 无法匹配：该账号下没有任何实体"
-                } else {
-                    "domain=$domain 不存在。可用 domain：${availableDomains.joinToString(" / ")}；不传 domain 表示全部"
-                },
-            )
-        }
-
-        val filtered = devices.filter { d ->
-            (area.isEmpty() || (d.area ?: "").equals(area, ignoreCase = true)) &&
-                (domain.isEmpty() || d.entities.any { it.domain.equals(domain, ignoreCase = true) })
-        }
-
-        // 单个过滤值合法、但组合结果为空（如「客厅里没有 light」）时，
-        // 同样说清楚是哪一维不匹配，而不是回一个空列表。
-        // 不带过滤条件时保持原语义：空列表就是空列表（账号下确实没设备）。
-        if (filtered.isEmpty() && (area.isNotEmpty() || domain.isNotEmpty())) {
-            val domainsInArea = devices
-                .filter { area.isEmpty() || (it.area ?: "").equals(area, ignoreCase = true) }
-                .flatMap { it.entities }.map { it.domain.lowercase() }.distinct().sorted()
-            throw CapError(
-                INVALID_FILTER,
-                "area=${area.ifEmpty { "（全部）" }} 下没有 domain=$domain 的实体。" +
-                    "该范围内可用 domain：${domainsInArea.joinToString(" / ")}",
-            )
-        }
-
         val arr = JSONArray()
-        for (d in filtered) {
-            val entities = JSONArray()
+        for (d in devices) {
+            val controllable = JSONArray()
+            var readonly = 0
             for (e in d.entities) {
-                entities.put(
+                if (e.domain.lowercase() in READ_ONLY_DOMAINS) {
+                    readonly++
+                    continue
+                }
+                controllable.put(
                     JSONObject()
                         .put("entity_id", e.entity_id)
                         .put("domain", e.domain)
                         .put("name", e.name)
-                        .put("state", e.state)
-                        .put("attributes", JSONObject(e.attributes as Map<*, *>)),
+                        .put("state", e.state),
                 )
             }
             arr.put(
@@ -121,10 +91,60 @@ class DeviceControlCore @Inject constructor(
                     .put("area", d.area)
                     .put("manufacturer", d.manufacturer)
                     .put("model", d.model)
-                    .put("entities", entities),
+                    .put("domains", JSONArray(d.entities.map { it.domain.lowercase() }.distinct().sorted()))
+                    .put("entity_count", d.entities.size)
+                    .put("readonly_count", readonly)
+                    .put("entities", controllable),
             )
         }
-        return JSONObject().put("count", filtered.size).put("devices", arr)
+        return JSONObject().put("count", devices.size).put("devices", arr)
+    }
+
+    /**
+     * 列出**某台设备**的全部实体（含只读传感器），用于钻取 entity_id。
+     *
+     * [listDevices] 只展开可控制的实体，只读实体只给个计数 —— 因为它们占了大半
+     * 体积却对「控制」没用。但用户问「主卧温度多少」时又必须能拿到温湿度计的
+     * entity_id，所以留了这个按设备名钻取的入口。
+     *
+     * 设备名先精确匹配、再忽略大小写、最后包含匹配；都不中就把可用设备名列出来
+     * （与 INVALID_FILTER 的既有风格一致：别让调用方把拼写错误当成事实）。
+     *
+     * @throws CapError ENTITY_NOT_FOUND（设备名不存在）、NOT_AUTHENTICATED
+     */
+    suspend fun listEntities(deviceNameRaw: String): JSONObject {
+        val token = requireToken()
+        val want = deviceNameRaw.trim()
+        if (want.isEmpty()) {
+            throw CapError(INVALID_PARAMS, "缺少必填参数 device_name。正确写法：\"主卧温湿度计\"")
+        }
+        val devices = api.listDevices(token).filter { it.entities.isNotEmpty() }
+        val hit = devices.firstOrNull { it.name == want }
+            ?: devices.firstOrNull { it.name.equals(want, ignoreCase = true) }
+            ?: devices.firstOrNull { it.name.contains(want, ignoreCase = true) }
+        if (hit == null) {
+            val names = devices.map { it.name }.sorted()
+            throw CapError(
+                ENTITY_NOT_FOUND,
+                "device_name=$want 不存在。可用设备名：${names.joinToString(" / ")}",
+            )
+        }
+        val entities = JSONArray()
+        for (e in hit.entities) {
+            entities.put(
+                JSONObject()
+                    .put("entity_id", e.entity_id)
+                    .put("domain", e.domain)
+                    .put("name", e.name)
+                    .put("state", e.state)
+                    .put("controllable", e.domain.lowercase() !in READ_ONLY_DOMAINS),
+            )
+        }
+        return JSONObject()
+            .put("device", hit.name)
+            .put("area", hit.area)
+            .put("entity_count", hit.entities.size)
+            .put("entities", entities)
     }
 
     /**

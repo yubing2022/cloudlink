@@ -155,7 +155,7 @@ class CloudLinkMcpServer(
 
 ---
 
-## 4. 三个 MCP 工具契约
+## 4. MCP 工具契约（4 个）
 
 Tool name（PalmClaw 会自动加 `mcp_<serverName>_` 前缀；`serverName` 取 `cloudlink` 时最终为 `mcp_cloudlink_device_list` 等）：
 
@@ -164,21 +164,46 @@ Tool name（PalmClaw 会自动加 `mcp_<serverName>_` 前缀；`serverName` 取 
 
 | Tool name | 对应 CloudLink 能力 | 说明 |
 |---|---|---|
-| `device_list` | `listDevices` | 列出设备，支持 area/domain 过滤 |
+| `device_list` | `listDevices` | 列出设备（**零参数**），返回设备 + 可控实体 |
+| `device_entities` | `listEntities` | 按设备名钻取该设备的全部实体（含只读传感器） |
 | `device_get_state` | `getState` | 取单个设备/实体状态 |
 | `device_control` | `control` | 下发控制（domain/service/data） |
+
+### 为什么 `device_list` 是零参数的
+
+给端侧小模型用时踩过两个坑，都用「结构」而不是「文案」来治：
+
+1. **模型看到可填的 string 属性就会去填**。原本 `area` / `domain` 是可选的，
+   但小模型读到 schema 里有两个 string 属性，就认为「必须填」，于是反问用户
+   「您希望查看哪个区域（area）和哪个领域（domain）」——而一次不带过滤的
+   list 本来就能回答。**把属性彻底删掉，模型就没有可问的东西了。**
+   区域信息本来就在每台设备的 `area` 字段里，模型自己就能挑。
+2. **返回体太大会把小模型的上下文吃掉**。HA 的实体清单里塞满与决策无关的噪音
+   （打印机的碳粉余量、重复的 `friendly_name`、`supported_features`）。
+   实测本机 14 台设备 / 91 个实体，全量返回 **22KB ≈ 8~11K token**，
+   一次列表就把上下文吃掉大半，之后它就开始胡说。
+
+所以 `device_list` 现在返回**紧凑版**：设备信息 + 只展开**能控制的**实体
+（只读实体只给 `readonly_count`），实体只留 `entity_id/domain/name/state`，
+`attributes` 全部丢弃（要属性用 `device_get_state` 单查）。
+需要只读传感器的 `entity_id` 时，用 `device_entities` 按设备名钻取。
 
 `inputSchema`（骨架，字段名/描述/required **以 `DeviceToolSchema` 现有实现为准**，保持一致）：
 
 ```jsonc
-// device_list
+// device_list —— 零属性，不是漏了，是刻意的
+{
+  "type": "object",
+  "properties": {}
+}
+
+// device_entities
 {
   "type": "object",
   "properties": {
-    "area":     { "type": "string", "description": "按区域过滤，如 '客厅'；省略则返回全部" },
-    "domain":   { "type": "string", "description": "按设备域过滤，如 'light'/'switch'；省略则返回全部" }
+    "device_name": { "type": "string", "description": "设备名，用 device_list 返回里的 name 原样填写" }
   },
-  "required": []
+  "required": ["device_name"]
 }
 
 // device_get_state
