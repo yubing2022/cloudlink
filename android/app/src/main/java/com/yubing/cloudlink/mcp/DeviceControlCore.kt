@@ -253,6 +253,55 @@ class DeviceControlCore @Inject constructor(
         else -> throw CapError(INVALID_PARAMS, "data 必须是 JSON 对象（object），收到 ${jsonTypeName(raw)}：$raw")
     }
 
+    /**
+     * 取一个**可选**的字符串参数，容忍小模型把「没填」写成 null / {} / []。
+     *
+     * 为什么不能直接用 `JSONObject.optString(name, "")`：Android 这个 API 有两个坑，
+     *  1. 值为 JSON null 时返回的是字符串 `"null"` —— 因为 `JSONObject.NULL` 不是
+     *     Java null，`optString` 走 `String.valueOf()` 把它转成了 "null"，
+     *     fallback 根本不生效（实测 area=null 会变成 `area="null"`）；
+     *  2. 值为对象/数组时返回的是该值的 JSON 文本（如 `"{}"`、`"[]"`）。
+     *
+     * 本地小模型很爱把没填的可选参数写成 null 或 {}，于是 area 变成字符串 "null"，
+     * 服务端报 `INVALID_FILTER: area=null 不存在`；模型读不懂这句话就把锅甩给
+     * 「参数类型不对」，反问用户要 area —— 而一次不过滤的 list 调用本来就能回答。
+     *
+     * 现在：null / 缺失 → 空串（对过滤参数 = 不过滤）；其它非字符串类型 → INVALID_PARAMS，
+     * 并说清「期望类型 + 实际类型 + 怎么写才对」，让模型能自我纠正而不是甩锅给用户。
+     */
+    fun optionalString(args: JSONObject, key: String, example: String): String {
+        if (!args.has(key)) return ""
+        return coerceString(args.opt(key), key, example)
+    }
+
+    /**
+     * 取一个**必填**的字符串参数。
+     *
+     * 缺失或 JSON null → 提示缺参；类型不对 → 提示正确写法。
+     * 与 [optionalString] 共用同一套类型判定，避免两条通道对同一份入参给出不同结论。
+     */
+    fun requiredString(args: JSONObject, key: String, example: String): String {
+        if (!args.has(key)) {
+            throw CapError(INVALID_PARAMS, "缺少必填参数 $key。正确写法：$example")
+        }
+        val v = coerceString(args.opt(key), key, example)
+        if (v.isEmpty()) {
+            throw CapError(INVALID_PARAMS, "参数 $key 不能为空。正确写法：$example")
+        }
+        return v
+    }
+
+    private fun coerceString(raw: Any?, key: String, example: String): String = when (raw) {
+        null, JSONObject.NULL -> ""
+        is String -> raw
+        is Boolean, is Number, is JSONArray, is JSONObject -> throw CapError(
+            INVALID_PARAMS,
+            "$key 必须是字符串（如 $example），收到 ${jsonTypeName(raw)} 类型（$raw）。" +
+                "不要传 null 或空对象；不需要这个参数时直接省略它，不要为此反问用户。",
+        )
+        else -> raw.toString()
+    }
+
     /** Returns a ready-to-use `Bearer ...` header, or signals the UI never logged in. */
     private suspend fun requireToken(): String {
         val t = tokenStore.getAccessToken()

@@ -124,16 +124,17 @@ class CloudLinkCapabilityService : AgentBridgeFunctionProviderService() {
             val result = runBlocking {
                 when (capabilityId.removePrefix("$NAMESPACE.")) {
                     "device.list@v1" -> deps.core().listDevices(
-                        input.optString("area", ""),
-                        input.optString("domain", ""),
+                        deps.core().optionalString(input, "area", "\"客厅\""),
+                        deps.core().optionalString(input, "domain", "\"light\""),
                     )
 
-                    "device.get_state@v1" -> deps.core().getState(input.optString("entity_id", ""))
+                    "device.get_state@v1" ->
+                        deps.core().getState(deps.core().requiredString(input, "entity_id", "\"light.xx_yy\""))
 
                     "device.control@v1" -> deps.core().control(
-                        input.optString("entity_id", ""),
-                        input.optString("domain", ""),
-                        input.optString("service", ""),
+                        deps.core().requiredString(input, "entity_id", "\"light.xx_yy\""),
+                        deps.core().requiredString(input, "domain", "\"light\""),
+                        deps.core().requiredString(input, "service", "\"turn_on\""),
                         deps.core().requireDataMap(
                             if (input.has("data") && !input.isNull("data")) input.opt("data") else null,
                         ),

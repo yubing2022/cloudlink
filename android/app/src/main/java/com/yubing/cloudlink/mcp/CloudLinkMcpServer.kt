@@ -177,16 +177,17 @@ class CloudLinkMcpServer(
             val result = runBlocking {
                 when (name) {
                     DeviceToolSchema.LIST -> core.listDevices(
-                        args.optString("area", ""),
-                        args.optString("domain", ""),
+                        core.optionalString(args, "area", "\"客厅\""),
+                        core.optionalString(args, "domain", "\"light\""),
                     )
 
-                    DeviceToolSchema.GET_STATE -> core.getState(args.optString("entity_id", ""))
+                    DeviceToolSchema.GET_STATE ->
+                        core.getState(core.requiredString(args, "entity_id", "\"light.xx_yy\""))
 
                     DeviceToolSchema.CONTROL -> core.control(
-                        args.optString("entity_id", ""),
-                        args.optString("domain", ""),
-                        args.optString("service", ""),
+                        core.requiredString(args, "entity_id", "\"light.xx_yy\""),
+                        core.requiredString(args, "domain", "\"light\""),
+                        core.requiredString(args, "service", "\"turn_on\""),
                         core.requireDataMap(
                             if (args.has("data") && !args.isNull("data")) args.opt("data") else null,
                         ),
