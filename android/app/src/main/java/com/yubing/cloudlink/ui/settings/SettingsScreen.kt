@@ -3,6 +3,7 @@ package com.yubing.cloudlink.ui.settings
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
@@ -109,6 +110,79 @@ class SettingsViewModel @Inject constructor(
         if (_batteryExempt.value == true) return null
         return Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
             data = Uri.parse("package:${appContext.packageName}")
+        }
+    }
+
+    /**
+     * 「后台运行 / 应用启动管理」的系统设置入口。
+     *
+     * 为什么单独要一个入口（电池优化白名单不够）：
+     * Android 15+ 的 App Freezer 与 ColorOS 的「智能后台管理」会把切到后台的 App
+     * **冻结** —— 线程被挂起，socket 还在 LISTEN、进程与前台服务都活着，
+     * 但没人再 accept 新连接。本机（OPPO / ColorOS 17 / Android 17）实测：
+     * App 切到后台约 25 秒后，127.0.0.1:8731 的请求全部超时（手机本机直连
+     * 同样超时，排除 adb 隧道因素）；拉回前台立刻恢复（7ms 返回）。
+     * 保持前台 40 秒则一直正常 —— 说明触发条件是「切后台」而非时间或息屏。
+     *
+     * 前台服务（specialUse）并不能豁免这个冻结，必须用户在系统设置里放行。
+     * 国产 ROM 各自有独立的开关，只能给入口 + 明确指引，代码无法代劳。
+     */
+    fun romBackgroundSettingsIntent(): Intent {
+        val pkg = appContext.packageName
+        val maker = (Build.MANUFACTURER + " " + Build.BRAND).lowercase()
+        // 各家 ROM 的「后台活动 / 自启动管理」页面。第一个不一定存在或不导出，
+        // 所以准备多个候选，逐个尝试，最后兜底到本 App 的系统详情页。
+        val candidates = when {
+            maker.contains("oppo") || maker.contains("realme") || maker.contains("oneplus") ->
+                listOf("com.oplus.battery" to "com.oplus.startupapp.view.StartupAppListActivity")
+            maker.contains("xiaomi") || maker.contains("redmi") ->
+                listOf("com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity")
+            maker.contains("vivo") ->
+                listOf("com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")
+            maker.contains("huawei") || maker.contains("honor") ->
+                listOf("com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity")
+            else -> emptyList()
+        }
+        for ((p, cls) in candidates) {
+            val intent = Intent().setClassName(p, cls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // 只对**确认 exported** 的 Activity 自动跳转。ColorOS 的
+            // com.oplus.startupapp.view.StartupAppListActivity 就是未导出的：
+            // 直接 startActivity 会静默失败（Activity 启动即崩，回到本 App），
+            // 用户只会觉得「按钮没反应」。未导出的一律走兜底的应用详情页。
+            val ri = runCatching {
+                appContext.packageManager.resolveActivity(intent, 0)
+            }.getOrNull()
+            if (ri?.activityInfo?.exported == true) return intent
+        }
+        // 兜底：系统「应用信息」页里也有「省电策略 / 后台运行」入口。
+        return Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.parse("package:$pkg")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    /** 兜底：系统「应用信息」页（里面也有省电策略 / 后台运行入口）。 */
+    fun appDetailsIntent(): Intent =
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.parse("package:${appContext.packageName}")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+    /** 当前 ROM 的后台管理页该怎么点 —— 文案跟着 ROM 变，别让用户自己找。 */
+    fun romBackgroundHint(): String {
+        val maker = (Build.MANUFACTURER + " " + Build.BRAND).lowercase()
+        return when {
+            maker.contains("oppo") || maker.contains("realme") || maker.contains("oneplus") ->
+                "设置 → 电池 → 更多设置 →「允许后台运行」/ 应用启动管理 → 找到 CloudLink，" +
+                    "把「允许后台运行」与「允许自启动」都打开。"
+            maker.contains("xiaomi") || maker.contains("redmi") ->
+                "设置 → 应用设置 → 应用管理 → CloudLink → 省电策略 → 选「无限制」。"
+            maker.contains("vivo") ->
+                "设置 → 电池 → 后台高耗电 → 允许 CloudLink 后台运行。"
+            maker.contains("huawei") || maker.contains("honor") ->
+                "设置 → 应用 → 应用启动管理 → CloudLink → 手动管理 → 全部打开（自启动/关联启动/后台活动）。"
+            else ->
+                "设置 → 应用 → CloudLink → 电池/省电策略 → 设为「无限制」或「允许后台运行」。"
         }
     }
 
@@ -263,6 +337,9 @@ fun SettingsScreen(
                 onRestart = viewModel::restartMcp,
                 onProbe = { viewModel.probeMcp(); viewModel.refreshBattery() },
                 onRequestBatteryExemption = { viewModel.requestBatteryExemption() },
+                romBackgroundIntent = viewModel.romBackgroundSettingsIntent(),
+                fallbackAppDetailsIntent = viewModel.appDetailsIntent(),
+                romHint = viewModel.romBackgroundHint(),
             )
 
             SettingsPage.DEVICE -> DeviceVisibilityPage(
@@ -448,6 +525,9 @@ private fun McpServerCard(
     onRestart: () -> Unit,
     onProbe: () -> Unit,
     onRequestBatteryExemption: () -> Intent?,
+    romBackgroundIntent: Intent,
+    fallbackAppDetailsIntent: Intent,
+    romHint: String,
 ) {
     Column(modifier = modifier.padding(16.dp)) {
         // 端口与 URL：这是要填到 PalmClaw 里的那一串。
@@ -570,6 +650,26 @@ private fun McpServerCard(
                         onClick = { onRequestBatteryExemption()?.let { context.startActivity(it) } },
                     ) { Text("加入电池优化白名单") }
                 }
+
+                Spacer(Modifier.height(10.dp))
+
+                // 「后台运行」是独立于电池优化的另一道关：Android 15+ 的 App Freezer
+                // 与 ColorOS 的智能后台管理会把切后台的 App 冻结（线程挂起），此时
+                // 本机 Agent 调用 MCP 会超时，而前台服务并不能豁免。只能引导用户放行。
+                InfoRow("后台运行", "需在系统设置里放行（冻结时 MCP 调用会超时）")
+                Text(
+                    text = "App 切到后台后若被系统冻结，本机 Agent 调用 MCP 会一直超时" +
+                        "（前台服务挡不住这种冻结）。请按下面路径放行：\n" + romHint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 2.dp),
+                )
+                TextButton(
+                    onClick = {
+                        runCatching { context.startActivity(romBackgroundIntent) }
+                            .onFailure { context.startActivity(fallbackAppDetailsIntent) }
+                    },
+                ) { Text("打开系统后台管理") }
             }
         }
 
