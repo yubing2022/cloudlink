@@ -194,6 +194,18 @@ class DeviceControlCore @Inject constructor(
      * 本地 MCP 层用它做**消歧**：命中唯一就采用；命中多个就把候选列出来，
      * 让模型改用 `area` 区分 —— **不替模型猜**。
      *
+     * ## 名字形态：模型抄什么我们都能接住
+     *
+     * 真机事故（2026-11-04）：`device_list` 的返回被模型摊平成 27 个标量，
+     * 名字与区域的配对丢失；第二轮模型干脆不调工具，凭残骸臆造设备。
+     * 改成纯文本清单后，模型的最优行为是**整行照抄**「- 落地灯（客厅）」——
+     * 于是 `device_name` 收到的是带列表符、带区域括号的整行，不是干净的「落地灯」。
+     *
+     * 所以这里不要求模型「编辑」，只要求它「抄」：
+     * [deviceRefCandidates] 把原始输入拆成若干个 (名字, 区域) 候选，
+     * 逐个尝试匹配，**括号里的区域直接当消歧依据** ——
+     * 「落地灯（客厅）」比「落地灯」更精确，不需要模型再填一次 area。
+     *
      * ## 对其它通道的影响
      *
      * 这是**新增**的只读查询，不改变 [listDevices] / [listEntities] / [getState] /
@@ -202,9 +214,8 @@ class DeviceControlCore @Inject constructor(
      * @throws CapError INVALID_PARAMS（缺 device_name）、ENTITY_NOT_FOUND（不存在或有多个同名）
      */
     suspend fun resolveDevice(deviceNameRaw: String, areaRaw: String = ""): ResolvedDevice {
-        val wantName = deviceNameRaw.trim()
-        val wantArea = areaRaw.trim()
-        if (wantName.isEmpty()) {
+        val candidates = deviceRefCandidates(deviceNameRaw, areaRaw)
+        if (candidates.isEmpty()) {
             throw CapError(INVALID_PARAMS, "缺少必填参数：device_name")
         }
         val token = requireToken()
@@ -214,34 +225,117 @@ class DeviceControlCore @Inject constructor(
             // 包括「设备名不存在」错误里列出的候选。
             .filterNot { isEntityIdLike(it.name) }
 
-        // 先用 area 收窄 —— 用户给了区域时，同名设备就能被区分开。
-        val scoped = if (wantArea.isEmpty()) {
-            devices
-        } else {
-            devices.filter { (it.area ?: "").equals(wantArea, ignoreCase = true) }
+        // 逐个候选尝试：先精确、再忽略大小写、最后包含。
+        // 命中唯一就返回；命中多个先记下来，继续试下一个候选
+        // （括号里的区域往往能把同名设备区分开）。
+        var ambiguous: List<com.yubing.cloudlink.data.model.HomeDevice>? = null
+        var ambiguousName = ""
+
+        for ((wantName, wantArea) in candidates) {
+            // 先用 area 收窄 —— 用户给了区域时，同名设备就能被区分开。
+            val scoped = if (wantArea.isEmpty()) {
+                devices
+            } else {
+                devices.filter { (it.area ?: "").equals(wantArea, ignoreCase = true) }
+            }
+            if (scoped.isEmpty()) continue
+
+            val exact = scoped.filter { it.name == wantName }
+                .ifEmpty { scoped.filter { it.name.equals(wantName, ignoreCase = true) } }
+            val hits = if (exact.isNotEmpty()) {
+                exact
+            } else {
+                scoped.filter { it.name.contains(wantName, ignoreCase = true) }
+            }
+            if (hits.isEmpty()) continue
+            if (hits.size == 1) {
+                val hit = hits.first()
+                return ResolvedDevice(name = hit.name, area = hit.area, entities = hit.entities)
+            }
+            if (ambiguous == null) {
+                ambiguous = hits
+                ambiguousName = wantName
+            }
         }
 
-        val exact = scoped.filter { it.name == wantName }
-            .ifEmpty { scoped.filter { it.name.equals(wantName, ignoreCase = true) } }
-        val candidates = if (exact.isNotEmpty()) exact else scoped.filter { it.name.contains(wantName, ignoreCase = true) }
-
-        if (candidates.isEmpty()) {
-            val names = devices.map { it.name }.distinct().sorted()
+        if (ambiguous != null) {
+            val where = ambiguous.joinToString(" / ") { d -> "${d.name}（${d.area ?: "未知区域"}）" }
             throw CapError(
                 ENTITY_NOT_FOUND,
-                "device_name=$wantName 不存在。可用设备名：${names.joinToString(" / ")}",
-            )
-        }
-        if (candidates.size > 1) {
-            val where = candidates.joinToString(" / ") { d -> "${d.name}（${d.area ?: "未知区域"}）" }
-            throw CapError(
-                ENTITY_NOT_FOUND,
-                "有 ${candidates.size} 个设备叫「$wantName」：$where。" +
+                "有 ${ambiguous.size} 个设备叫「$ambiguousName」：$where。" +
                     "请加上 area 参数区分后重试。",
             )
         }
-        val hit = candidates.first()
-        return ResolvedDevice(name = hit.name, area = hit.area, entities = hit.entities)
+
+        val names = devices.map { it.name }.distinct().sorted()
+        throw CapError(
+            ENTITY_NOT_FOUND,
+            "device_name=${deviceNameRaw.trim()} 不存在。可用设备名：${names.joinToString(" / ")}",
+        )
+    }
+
+    /**
+     * 把模型填的 `device_name` 拆成若干个「(设备名, 区域)」候选，按可靠度排序。
+     *
+     * ## 为什么需要
+     *
+     * 模型最省力的做法是**把 `device_list` 返回的那一行原样抄进参数**：
+     * 「- 落地灯（客厅）」。这行里带着列表符、区域括号，有时还带 markdown 强调号。
+     * 要求模型「编辑」成干净的「落地灯」是在为难它 —— 而它一旦编辑就会出错
+     * （实测把名字抄错、漏字、带上前缀）。
+     *
+     * 所以服务端负责拆：候选从「最接近原样」逐步退化到「最宽松」，
+     * 第一个能唯一命中的候选直接采用。
+     *
+     * 候选来源：
+     * 1. 原样（设备真名就叫「落地灯（客厅）」时命中这个）；
+     * 2. 剥掉列表符 / markdown 强调 / 引号；
+     * 3. 剥掉尾部括号，括号里的内容**当区域用** —— 这让「落地灯（客厅）」
+     *    直接命中客厅那台，同名设备不用模型再补 area；
+     * 4. 剥掉尾部括号后仍保留显式 area（显式参数优先于括号内容）。
+     */
+    private fun deviceRefCandidates(rawName: String, rawArea: String): List<Pair<String, String>> {
+        val explicitArea = rawArea.trim()
+        val out = LinkedHashMap<String, Pair<String, String>>()
+
+        fun put(name: String, area: String) {
+            val n = name.trim()
+            if (n.isEmpty()) return
+            val key = "$n $area"
+            out.putIfAbsent(key, n to area)
+        }
+
+        val trimmed = rawName.trim()
+        if (trimmed.isEmpty()) return emptyList()
+
+        // ① 原样
+        put(trimmed, explicitArea)
+
+        // ② 剥 markdown 残留：列表符、强调号、引号
+        var cleaned = trimmed
+            .replace(Regex("^[\\*_`\"'“”‘’]+"), "")
+            .replace(Regex("[\\*_`\"'“”‘’]+$"), "")
+            .trim()
+        cleaned = cleaned
+            .replace(Regex("^[-*+•]+\\s*"), "")
+            .replace(Regex("^\\d+[.、)]\\s*"), "")
+            .trim()
+        put(cleaned, explicitArea)
+
+        // ③ 剥尾部括号：名字（区域）
+        val paren = Regex("^(.*?)\\s*[（(]\\s*([^（()）]*?)\\s*[）)]$").find(cleaned)
+        if (paren != null) {
+            val name = paren.groupValues[1].trim()
+            val areaInParen = paren.groupValues[2].trim()
+            if (name.isNotEmpty()) {
+                // 显式 area 优先；没有显式 area 时用括号里的区域（顺带完成消歧）
+                put(name, explicitArea)
+                if (explicitArea.isEmpty() && areaInParen.isNotEmpty()) {
+                    put(name, areaInParen)
+                }
+            }
+        }
+        return out.values.toList()
     }
 
     /**

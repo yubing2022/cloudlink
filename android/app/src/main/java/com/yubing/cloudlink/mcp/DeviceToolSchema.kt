@@ -45,10 +45,17 @@ object DeviceToolSchema {
      * 「**本工具不需要任何参数，直接调用**」。模型看到 schema 里有可填的
      * string 属性就会以为必须填，然后反问用户要区域名；把属性彻底去掉，
      * 它就没有可问的东西了。
+     *
+     * ⚠️ 这里**刻意不描述返回的具体结构**（不写「返回 {count, devices[]}」）。
+     * 同一份文案同时喂给两条通道，而两条通道的返回形态不同：
+     *  - AgentBridge capability 通道：结构化 JSON（给云端大模型用）
+     *  - 本地 MCP server 通道：纯文本清单（给端侧 2B 模型用，见
+     *    [McpDeviceView.deviceListText]）
+     * 描述里写死任何一种结构，另一条通道的描述就是假的。
+     * 格式细节写进 MCP server 自己的 `instructions`（server 侧专属载体）。
      */
     const val DESC_LIST =
-        "列出已接入 CloudLink 的智能家居（IoT）设备。返回 {count, devices[]}，" +
-            "每台设备只有 name（设备名）与 area（所在区域）。" +
+        "列出已接入 CloudLink 的智能家居（IoT）设备，每台设备包含 name（设备名）与 area（所在区域）。" +
             "**本工具不需要任何参数，直接调用即可**，不要反问用户要区域或类型。" +
             "设备名是后续所有查询与控制的入口 —— 拿到名字后再问「它是什么状态」或「把它打开」。"
 

@@ -184,10 +184,15 @@ class CloudLinkMcpServer(
                 // 客户端。Agent 侧不该出现任何 CloudLink 专用的提示词。
                 //
                 // 工具名一律引用常量，别在这里手写 —— 手写过一轮，改名就漂了。
+                //
+                // ⚠️ 长度预算：端侧提示词给本段 800 字符，超了会从中间截断
+                // （clipMiddle），关键句必须排在靠前/靠后的位置。
                 "问「有哪些设备/设备叫什么」「我家连了哪些 IoT 设备」「家里有什么智能家居」" +
                     "→ 直接调用 ${DeviceToolSchema.LIST}，" +
                     "它**不需要任何参数**，不要反问用户要区域或类型。" +
-                    "它的返回里每台设备只有 name 与 area，**设备名就是后续所有操作的入口**。" +
+                    "它的返回是一份**清单**：每行一台设备，格式是「- 设备名（区域）」。" +
+                    "回答用户时**把这几行原样逐行列出来**，每行一个，" +
+                    "`-` 后面留一个空格，不要合并成一整段，也不要自己编设备。" +
                     "查某台设备现在的状态 → 调用 ${DeviceToolSchema.GET_STATE}，" +
                     "参数 device_name 填设备名（如 \"落地灯\"）。" +
                     "想知道这台设备有哪些实体 → 调用 ${DeviceToolSchema.ENTITIES}，" +
@@ -222,9 +227,12 @@ class CloudLinkMcpServer(
         val name = params.optString("name")
         val args = params.optJSONObject("arguments") ?: JSONObject()
         return try {
-            val result = runBlocking {
+            // 工具结果是**文本**（MCP 的 content[].text），不是 JSON 值。
+            // 列表类工具刻意返回纯文本清单而非 JSON 数组 ——
+            // 理由见 [McpDeviceView.deviceListText]。
+            val result: String = runBlocking {
                 when (name) {
-                    DeviceToolSchema.LIST -> McpDeviceView.deviceListView(core.listDevices())
+                    DeviceToolSchema.LIST -> McpDeviceView.deviceListText(core.listDevices())
 
                     // 「有哪些设备」只列设备；「这台设备有什么」才钻到实体。
                     DeviceToolSchema.ENTITIES -> {
@@ -232,7 +240,7 @@ class CloudLinkMcpServer(
                             core.requiredString(args, "device_name", "\"设备名\""),
                             core.optionalString(args, "area", "\"区域名\""),
                         )
-                        McpDeviceView.entitiesView(device)
+                        McpDeviceView.entitiesText(device)
                     }
 
                     DeviceToolSchema.GET_STATE -> {
@@ -249,7 +257,7 @@ class CloudLinkMcpServer(
                             device,
                             primary,
                             core.getState(primary.entity_id),
-                        )
+                        ).toString()
                     }
 
                     // 控制：服务端自己挑「支持该 service 的实体」，
@@ -289,7 +297,7 @@ class CloudLinkMcpServer(
                             service,
                             data,
                         )
-                        McpDeviceView.controlResultView(device, target, controlResult)
+                        McpDeviceView.controlResultView(device, target, controlResult).toString()
                     }
 
                     else -> throw CapError(TOOL_NOT_FOUND, "unknown tool: $name")

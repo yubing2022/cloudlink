@@ -77,56 +77,92 @@ internal object McpDeviceView {
     // ------------------------------------------------------------------ 设备列表
 
     /**
-     * 「有哪些设备」的模型视图：**只有名字和区域**。
+     * 「有哪些设备」的模型载荷：**一份可以直接照抄的纯文本清单**。
      *
-     * 15 台设备 → 约 572 字节（原 9818）。
-     * area 必须留着 —— 它是同名设备唯一的消歧依据。
+     * ## 为什么不是 JSON
+     *
+     * 真机事故（2026-11-04）：这一层原本返回 JSON 数组
+     * `{"count":14,"devices":[{"name":"落地灯","area":"客厅"},...]}`。
+     * 工具侧完全正常（14 台设备、name/area 配对都对），但端侧 2B 模型
+     * **无法把嵌套数组还原成列表** —— 它把 14 个 name + 13 个 area
+     * 摊平成 **27 个标量**输出，配对关系当场丢失（名字和区域对不上），
+     * 第二轮更是在没调工具的情况下凭这份残骸臆造出**不存在的设备**。
+     *
+     * 根因不在模型「不听话」，而在**载荷要求模型做结构变换**：
+     * JSON 数组 → 列表，模型得先解析对象、抽出字段、重新配对、再排版。
+     * 2B 模型做不了这个。
+     *
+     * ## 载荷长什么样
+     *
+     * ```
+     * 共 14 台设备：
+     * - 落地灯（客厅）
+     * - 主卧温湿度计（卧室）
+     * ```
+     *
+     * 每行一台设备，**行内自带名字与区域**，模型的工作退化成
+     * 「把这几行原样抄进回答里」—— 零结构变换、零重新配对。
+     * 顺带解决了渲染问题：`-` 后面有空格，Markdown 不会把它
+     * 当成段落的续行（lazy continuation）把多行并成一段。
+     *
+     * ## 抄整行也能用
+     *
+     * 模型很可能把整行「落地灯（客厅）」原样塞进 `device_name` 参数。
+     * [DeviceControlCore.resolveDevice] 会把这类形态逐级拆开，
+     * 括号里的区域顺手当消歧依据 —— 模型**不需要编辑**，只需要抄。
+     *
+     * 15 台设备 → 约 300 字节（原 9818，且模型不用再解一遍）。
      */
-    fun deviceListView(coreResult: JSONObject): JSONObject {
+    fun deviceListText(coreResult: JSONObject): String {
         val devices = coreResult.optJSONArray("devices") ?: JSONArray()
-        val out = JSONArray()
+        val lines = StringBuilder()
+        var count = 0
         for (i in 0 until devices.length()) {
             val d = devices.optJSONObject(i) ?: continue
-            val name = d.optString("name")
+            val name = d.optString("name").trim()
             if (name.isBlank() || DeviceControlCore.isEntityIdLike(name)) continue
-            // core 的 entities[] 里只留了**可控制**的实体（只读域已被剔除），
-            // 所以「有没有它」直接回答了「这台设备能不能开/关」——
-            // 模型就不会对着打印机去调 turn_on 了。
-            val controllable = d.optJSONArray("entities")?.length() ?: 0
-            out.put(
-                JSONObject()
-                    .put("name", name)
-                    .put("area", d.opt("area") ?: JSONObject.NULL)
-                    .put("controllable", controllable > 0),
-            )
+            val rawArea = d.opt("area")
+            val area = if (rawArea is String) rawArea.trim() else ""
+            lines.append("- ").append(name)
+            if (area.isNotEmpty()) lines.append("（").append(area).append("）")
+            lines.append('\n')
+            count++
         }
-        return JSONObject().put("count", out.length()).put("devices", out)
+        return buildString {
+            append("共 ").append(count).append(" 台设备：\n")
+            append(lines)
+        }
     }
 
     // ------------------------------------------------------------------ 实体列表
 
     /**
-     * 单台设备的实体视图。
+     * 单台设备的实体清单：**纯文本**，每行一个实体。
+     *
+     * 和 [deviceListText] 同一个理由 —— 这是「模型可能要复述给用户看」的列表，
+     * 给 JSON 数组就会触发「摊平成标量流」的毛病（见 [deviceListText] 的事故记录）。
+     *
+     * 行的格式是 `- 实体名（domain）：状态`。实体名放在**最前面**，
+     * 因为模型要把它当 `entity_name` 参数抄给控制工具 ——
+     * 服务端会剥掉行首符号与括号部分再匹配（见 [pickEntityByShortName]）。
      *
      * 实体名精简：`落地灯  灯` → `落地灯`；`主卧温湿度计  温湿度传感器 温度` →
      * `温湿度传感器 温度`（压缩连续空格，保留区分度）。
      */
-    fun entitiesView(device: ResolvedDevice): JSONObject {
+    fun entitiesText(device: ResolvedDevice): String {
         val entities = device.entities.filterNot { isDiagnostic(it) }
-        val arr = JSONArray()
+        val sb = StringBuilder()
+        sb.append("设备「").append(device.name).append("」")
+        if (!device.area.isNullOrBlank()) sb.append("（").append(device.area).append("）")
+        sb.append("下有 ").append(entities.size).append(" 个实体：\n")
         for (e in entities) {
-            arr.put(
-                JSONObject()
-                    .put("name", shortEntityName(device.name, e.name, e.domain))
-                    .put("domain", e.domain)
-                    .put("state", e.state),
-            )
+            sb.append("- ")
+                .append(shortEntityName(device.name, e.name, e.domain))
+                .append("（").append(e.domain).append("）")
+                .append("：").append(e.state)
+                .append('\n')
         }
-        return JSONObject()
-            .put("device", device.name)
-            .put("area", device.area ?: JSONObject.NULL)
-            .put("count", arr.length())
-            .put("entities", arr)
+        return sb.toString()
     }
 
     /**
@@ -253,9 +289,16 @@ internal object McpDeviceView {
      * 这是 entity_id 的替代品：短中文名（"温度"、"开关"）比
      * `sensor.cgllc_cn_blt_3_1pm1n4qhk4o00_dove_temperature_p_2_1` 好抄得多 ——
      * 端侧模型抄长 ID 的失败率极高，抄短中文名几乎不会错。
+     *
+     * ## 归一化
+     *
+     * 模型最省力的做法是**把实体清单那一行整行抄进来**：
+     * 「- 温度（sensor）：23.5」。服务端负责剥掉行首符号、
+     * 括号里的 domain、冒号后的状态，只留实体名再匹配 ——
+     * 要求模型「编辑」成干净的「温度」是在为难它，而它一旦编辑就会出错。
      */
     fun pickEntityByShortName(device: ResolvedDevice, entityName: String): Entity? {
-        val want = entityName.trim()
+        val want = normalizeEntityRef(entityName)
         if (want.isEmpty()) return null
         val byExact = device.entities.firstOrNull {
             shortEntityName(device.name, it.name, it.domain).equals(want, ignoreCase = true)
@@ -264,6 +307,30 @@ internal object McpDeviceView {
         return device.entities.firstOrNull {
             shortEntityName(device.name, it.name, it.domain).contains(want, ignoreCase = true)
         }
+    }
+
+    /**
+     * 把模型抄来的实体引用还原成干净的实体名。
+     *
+     * ## 剥离顺序有讲究
+     *
+     * 行首是「- 温湿度传感器 温度（sensor）：23.5」，
+     * 要还原成「温湿度传感器 温度」，必须**先切状态、再切括号**：
+     * 先切括号的话，「（sensor）」后面还跟着「：23.5」，根本不在行尾，切不掉。
+     *
+     * 顺序：行首列表符 → 冒号后的状态 → 行尾括号段（domain）→ 尾部标点与 markdown 强调号。
+     */
+    private fun normalizeEntityRef(raw: String): String {
+        var s = raw.trim()
+        // ① 行首列表符（模型抄的整行以 "- " 开头）
+        s = s.replace(Regex("^[-*+•]+\\s*"), "")
+        // ② 冒号及其之后的状态
+        s = s.replace(Regex("\\s*[:：].*$"), "")
+        // ③ 行尾括号段（domain）
+        s = s.replace(Regex("\\s*[（(][^（()）]*[）)]\\s*$"), "")
+        // ④ 尾部标点与 markdown 强调号
+        s = s.replace(Regex("[\\*_`\"'“”’。．.,，]+$"), "").trim()
+        return s
     }
 
     /**
