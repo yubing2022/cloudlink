@@ -10,7 +10,7 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
-import java.util.Collections
+import java.io.ByteArrayOutputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -34,14 +34,25 @@ class CloudLinkMcpServer(
     port: Int = 8731,
 ) : NanoHTTPD(HOST, port) {
 
-    /** 已发放的会话 id。MCP 要求 server 在 initialize 响应里下发，之后客户端回带。 */
-    private val sessions: MutableSet<String> =
-        Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    /**
+     * 已发放的会话 id → 创建时间戳。MCP 要求 server 在 initialize 响应里下发，之后客户端回带。
+     *
+     * 为什么带时间戳：会话满了要淘汰**最老的**，不能随机挑一个。
+     * 随机淘汰会把正在使用的会话干掉，客户端下一次请求就吃到 404，
+     * 表现为「工具调用莫名失败/超时」——而这对客户端完全不可见，极难排查。
+     */
+    private val sessions: ConcurrentHashMap<String, Long> = ConcurrentHashMap()
 
     // ------------------------------------------------------------------ HTTP
 
     override fun serve(session: IHTTPSession): Response {
         val uri = (session.uri ?: "").substringBefore('?')
+        val method = session.method?.name ?: "?"
+        val sid = header(session, HDR_SESSION_ID)?.take(8) ?: "-"
+        // 到达日志：用来区分「请求根本没到 server」和「到了但响应没回去」。
+        // 之前只有 tools/call 级别的日志，客户端一超时，完全看不出请求走到哪一步。
+        Log.d(TAG, "→ $method $uri session=$sid")
+        val started = System.currentTimeMillis()
         return try {
             when {
                 uri != PATH -> json(Status.NOT_FOUND, rpcError(null, METHOD_NOT_FOUND, "not found: $uri"))
@@ -52,6 +63,8 @@ class CloudLinkMcpServer(
         } catch (t: Throwable) {
             Log.w(TAG, "serve failed: ${t.message}", t)
             json(Status.INTERNAL_ERROR, rpcError(null, INTERNAL_JSONRPC_ERROR, t.message ?: "internal error"))
+        }.also {
+            Log.d(TAG, "← $method $uri ${it.status} in ${System.currentTimeMillis() - started}ms")
         }
     }
 
@@ -72,19 +85,34 @@ class CloudLinkMcpServer(
             return json(Status.BAD_REQUEST, rpcError(null, INVALID_REQUEST, "Invalid Request"))
         }
 
-        // 会话校验：initialize 不需要已有会话（它自己开一个）；
-        // 其余请求必须带一个我们发出去的 Mcp-Session-Id，否则 404。
+        // 会话校验。
+        //
+        // initialize 不需要已有会话（它自己开一个）。
+        // 其余请求必须带一个我们发出去的 Mcp-Session-Id。
+        //
+        // **带了一个我们不认识的 id 时不返回 404，而是原地重建一个会话继续处理**。
+        // 原因：MCP 规范要求未知会话回 404，但客户端收到 404 会按规范回退到
+        // legacy SSE —— 而这个 server 明确不做 SSE（GET 直接 405），
+        // 于是整条链路以「工具调用莫名失败」收场，客户端还拿不到任何有用信息。
+        // 宽容重建的代价只是丢一段会话状态（这里本来就没状态），
+        // 换来的却是「会话被淘汰 / server 重启后自动恢复」。
         val sentId = header(session, HDR_SESSION_ID)
         val isInit = incoming.any { it.optString("method") == "initialize" }
-        if (!isInit && (sentId.isNullOrBlank() || !sessions.contains(sentId))) {
-            Log.w(TAG, "rejected: missing/unknown $HDR_SESSION_ID ($sentId)")
+        if (!isInit && sentId.isNullOrBlank()) {
+            Log.w(TAG, "rejected: missing $HDR_SESSION_ID")
             return json(
                 Status.NOT_FOUND,
-                rpcError(null, SESSION_ERROR, "unknown $HDR_SESSION_ID; send initialize first"),
+                rpcError(null, SESSION_ERROR, "missing $HDR_SESSION_ID; send initialize first"),
             )
         }
-        val sessionId = sentId?.takeIf { it.isNotBlank() && sessions.contains(it) }
-            ?: newSession()
+        val sessionId = when {
+            isInit -> newSession()
+            sessions.containsKey(sentId) -> sentId!!
+            else -> {
+                Log.i(TAG, "unknown session ${sentId?.take(8)} → creating a new one")
+                newSession()
+            }
+        }
 
         val responses = JSONArray()
         for (msg in incoming) {
@@ -115,7 +143,7 @@ class CloudLinkMcpServer(
 
     private fun handleDelete(session: IHTTPSession): Response {
         val sid = header(session, HDR_SESSION_ID)
-        if (!sid.isNullOrBlank() && sessions.remove(sid)) {
+        if (!sid.isNullOrBlank() && sessions.remove(sid) != null) {
             Log.i(TAG, "session terminated: ${sid.take(8)}")
         }
         McpStatusTracker.setActiveSessions(sessions.size)
@@ -156,10 +184,14 @@ class CloudLinkMcpServer(
                     "它**不需要任何参数**，不要反问用户要区域或类型。" +
                     "要控制设备 → 从 ${DeviceToolSchema.LIST} 返回的 entities[] 里取 " +
                     "entity_id 与 domain，再调用 ${DeviceToolSchema.CONTROL}；" +
-                    "只查状态用 ${DeviceToolSchema.GET_STATE}；" +
+                    "**查状态优先调用 ${DeviceToolSchema.ENTITIES} 并传 device_name" +
+                    "（如 device_name=\"落地灯\"），它的返回里就直接带 state，" +
+                    "你不需要记住 entity_id**；" +
+                    "只有当 entity_id 已经在手上时，才调用 ${DeviceToolSchema.GET_STATE}。" +
                     "需要只读传感器（温湿度计等）的 entity_id 时用 ${DeviceToolSchema.ENTITIES}。" +
                     "出错时结果文本里有 error_code，按它修正参数，而不是原样重试" +
-                    "（INVALID_PARAMS 是类型/写法错，ENTITY_NOT_FOUND 是名字或 ID 不存在）。",
+                    "（INVALID_PARAMS 是类型/写法错，ENTITY_NOT_FOUND 是名字或 ID 不存在，" +
+                    "消息里会列出最接近的实体）。",
             )
     }
 
@@ -170,7 +202,9 @@ class CloudLinkMcpServer(
                 JSONObject()
                     .put("name", name)
                     .put("description", description)
-                    .put("inputSchema", JSONObject(inputSchema)),
+                    .put("inputSchema", JSONObject(inputSchema))
+                    // 声明只读/写语义：客户端据此决定工具调用超时后能不能安全重试。
+                    .put("annotations", JSONObject(DeviceToolSchema.annotationsFor(name))),
             )
         }
         return JSONObject().put("tools", tools)
@@ -191,7 +225,10 @@ class CloudLinkMcpServer(
                     )
 
                     DeviceToolSchema.GET_STATE ->
-                        core.getState(core.requiredString(args, "entity_id", "\"light.xx_yy\""))
+                        core.getState(
+                            core.optionalString(args, "entity_id", "\"light.xx_yy\""),
+                            core.optionalString(args, "device_name", "\"落地灯\""),
+                        )
 
                     DeviceToolSchema.CONTROL -> core.control(
                         core.requiredString(args, "entity_id", "\"light.xx_yy\""),
@@ -241,9 +278,19 @@ class CloudLinkMcpServer(
 
     // ---------------------------------------------------------------- helpers
 
+    /**
+     * 读请求体。
+     *
+     * **不能阻塞读到 EOF**：NanoHTTPD 是「每连接一线程」，而 MCP 客户端用的是
+     * keep-alive 长连接 —— 在这种连接上 readText() 会一直等下去，
+     * 把线程池（默认 50）慢慢耗光，之后**所有**请求都排队等超时。
+     * 所以：只按 Content-Length 精确读；没有长度就按 chunked 解；
+     * 两者都不是就当空 body，绝不阻塞。
+     */
     private fun readBody(session: IHTTPSession): String {
-        val len = header(session, "content-length")?.toIntOrNull()
-        return if (len != null && len > 0) {
+        val len = header(session, "content-length")?.trim()?.toIntOrNull()
+        if (len != null) {
+            if (len <= 0) return ""
             val buf = ByteArray(len)
             var off = 0
             while (off < len) {
@@ -251,10 +298,39 @@ class CloudLinkMcpServer(
                 if (n < 0) break
                 off += n
             }
-            String(buf, 0, off, Charsets.UTF_8)
-        } else {
-            session.inputStream.bufferedReader().use { it.readText() }
+            return String(buf, 0, off, Charsets.UTF_8)
         }
+        val chunked = header(session, "transfer-encoding")
+            ?.contains("chunked", ignoreCase = true) == true
+        return if (chunked) readChunkedBody(session) else ""
+    }
+
+    /** 最小 chunked 解码器：size 行 → 数据 → CRLF，size=0 结束。 */
+    private fun readChunkedBody(session: IHTTPSession): String {
+        val out = StringBuilder()
+        val sizeLine = ByteArrayOutputStream()
+        while (true) {
+            sizeLine.reset()
+            var b = session.inputStream.read()
+            if (b < 0) break
+            while (b >= 0 && b != '\n'.code) {
+                if (b != '\r'.code) sizeLine.write(b)
+                b = session.inputStream.read()
+            }
+            val size = sizeLine.toString().trim().substringBefore(';').toIntOrNull() ?: break
+            if (size <= 0) break
+            val buf = ByteArray(size)
+            var off = 0
+            while (off < size) {
+                val n = session.inputStream.read(buf, off, size - off)
+                if (n < 0) break
+                off += n
+            }
+            out.append(String(buf, 0, off, Charsets.UTF_8))
+            session.inputStream.read() // chunk 后的 CRLF
+            session.inputStream.read()
+        }
+        return out.toString()
     }
 
     /** NanoHTTPD 的 header key 大小写不保证，统一忽略大小写取。 */
@@ -264,26 +340,44 @@ class CloudLinkMcpServer(
     /**
      * 新会话。会话集合本身要有上界：PalmClaw 断线重连会不断 initialize，
      * 每次都发新 id，不清理的话这个集合只增不减（虽然只是几十字节的字符串）。
+     *
+     * 淘汰**最老的**而不是随机的：随机淘汰会干掉正在用的会话，
+     * 客户端下一次请求就吃 404，而它根本不知道自己被淘汰了。
      */
     private fun newSession(): String {
         if (sessions.size >= MAX_SESSIONS) {
-            sessions.firstOrNull()?.let { sessions.remove(it) }
+            val oldest = sessions.entries.minByOrNull { it.value }?.key
+            if (oldest != null) {
+                sessions.remove(oldest)
+                Log.i(TAG, "evicted oldest session ${oldest.take(8)} (cap=$MAX_SESSIONS)")
+            }
         }
-        return UUID.randomUUID().toString().also {
-            sessions.add(it)
-            McpStatusTracker.setActiveSessions(sessions.size)
-        }
+        val id = UUID.randomUUID().toString()
+        sessions[id] = System.currentTimeMillis()
+        McpStatusTracker.setActiveSessions(sessions.size)
+        return id
     }
 
     private fun response(status: Status): Response {
         val r = NanoHTTPD.newFixedLengthResponse(status, MIME_JSON, "")
         r.addHeader("Allow", "POST, DELETE")
+        r.addHeader("Connection", "close")
         return r
     }
 
     private fun json(status: Status, body: String): Response {
         val r = NanoHTTPD.newFixedLengthResponse(status, MIME_JSON, body)
         r.addHeader("Allow", "POST, DELETE")
+        // **每次响应都关连接**。
+        //
+        // NanoHTTPD 在 socket 读超时后可能留下一条「僵尸连接」：socket 还开着，
+        // 但已经不再处理请求。客户端（OkHttp 连接池，keep-alive 5 分钟）下一次
+        // 复用它时，写入照样成功，却永远等不到响应 —— 表现为工具调用挂到超时。
+        // 实测过一次：上一条调用成功，闲置几十秒后的下一次调用整整卡了 30s，
+        // 而同一请求单独发是 200ms 返回。
+        //
+        // 回环上加一次 TCP 握手不到 1ms，换掉「偶发卡死」这笔账很划算。
+        r.addHeader("Connection", "close")
         return r
     }
 
@@ -305,7 +399,13 @@ class CloudLinkMcpServer(
         private const val MIME_JSON = "application/json"
         private const val TOOL_NOT_FOUND = "TOOL_NOT_FOUND"
         private const val INTERNAL_ERROR_CODE = "INTERNAL_ERROR"
-        private const val MAX_SESSIONS = 16
+
+        /**
+         * 会话上限。之前是 16 —— 客户端每次重连都发新 id，调试期间几次 initialize
+         * 就把正在用的会话挤掉了，表现为随机的「工具调用失败」。128 足够，
+         * 淘汰时按创建时间从最老的开始（见 [newSession]）。
+         */
+        private const val MAX_SESSIONS = 128
 
         /** SDK 0.10.0 能说的版本；协商时优先跟客户端走，否则给最新的。 */
         private val SUPPORTED_PROTOCOLS = setOf("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")

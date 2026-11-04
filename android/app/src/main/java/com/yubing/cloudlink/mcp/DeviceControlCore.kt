@@ -126,9 +126,7 @@ class DeviceControlCore @Inject constructor(
         val devices = api.listDevices(token).filter { it.entities.isNotEmpty() }
 
         if (wantName.isNotEmpty()) {
-            val hit = devices.firstOrNull { it.name == wantName }
-                ?: devices.firstOrNull { it.name.equals(wantName, ignoreCase = true) }
-                ?: devices.firstOrNull { it.name.contains(wantName, ignoreCase = true) }
+            val hit = matchDeviceByName(devices, wantName)
             if (hit == null) {
                 val names = devices.map { it.name }.sorted()
                 throw CapError(
@@ -175,6 +173,15 @@ class DeviceControlCore @Inject constructor(
         return JSONObject().put("count", total).put("devices", arr)
     }
 
+    /** 设备名匹配：先精确、再忽略大小写、最后包含。与 [listEntities] 共用同一套规则。 */
+    private fun matchDeviceByName(
+        devices: List<com.yubing.cloudlink.data.model.HomeDevice>,
+        wantName: String,
+    ): com.yubing.cloudlink.data.model.HomeDevice? =
+        devices.firstOrNull { it.name == wantName }
+            ?: devices.firstOrNull { it.name.equals(wantName, ignoreCase = true) }
+            ?: devices.firstOrNull { it.name.contains(wantName, ignoreCase = true) }
+
     /** 单台设备的实体块。两条过滤分支共用，保证输出结构完全一致。 */
     private fun deviceJson(
         device: com.yubing.cloudlink.data.model.HomeDevice,
@@ -198,13 +205,30 @@ class DeviceControlCore @Inject constructor(
 
     /**
      * @throws CapError INVALID_PARAMS、ENTITY_NOT_FOUND、NOT_AUTHENTICATED
+     *
+     * `entityIdRaw` 与 `deviceNameRaw` **二选一**。
+     *
+     * 为什么允许按设备名查：端侧小模型抄 entity_id 的失败率极高
+     * （实测把 `1208334138` 抄成 `1_20_8_3_3_8`，把传感器 ID 截断成
+     * `..._dove_tempe`），而 entity_id 长得根本不像人话。让模型只报设备名，
+     * 剩下的匹配交给服务端 —— 它本来就有全量实体清单。
      */
-    suspend fun getState(entityIdRaw: String): JSONObject {
+    suspend fun getState(entityIdRaw: String, deviceNameRaw: String = ""): JSONObject {
         val entityId = entityIdRaw.trim().lowercase()
-        if (entityId.isEmpty()) {
-            throw CapError(INVALID_PARAMS, "missing required param: entity_id")
+        val deviceName = deviceNameRaw.trim()
+        if (entityId.isEmpty() && deviceName.isEmpty()) {
+            throw CapError(
+                INVALID_PARAMS,
+                "缺少必填参数：entity_id 与 device_name 二选一。" +
+                    "不知道 entity_id 时直接传 device_name（如 \"落地灯\"），服务端会自己匹配。",
+            )
         }
         requireToken()
+
+        // 按设备名查：走 listEntities 同一套匹配规则，服务端负责挑实体。
+        if (entityId.isEmpty()) {
+            return stateByDeviceName(deviceName)
+        }
 
         val state = try {
             api.getEntityState(entityId)
@@ -217,18 +241,131 @@ class DeviceControlCore @Inject constructor(
             // swallowed and misclassified as ENTITY_NOT_FOUND.
             if (e.code() == 404 || e.code() == 405) {
                 val token = requireToken()
-                api.listDevices(token)
+                val entities = api.listDevices(token)
                     .asSequence()
                     .flatMap { it.entities.asSequence() }
-                    .firstOrNull { it.entity_id == entityId }
-                    ?.let { DeviceState(it.entity_id, it.state, it.attributes, it.lastStateChange) }
-                    ?: throw mapHttpError(e, entityId)
+                    .toList()
+                val resolution = resolveEntity(entityId, entities)
+                when {
+                    resolution.exact != null -> DeviceState(
+                        resolution.exact.entity_id,
+                        resolution.exact.state,
+                        resolution.exact.attributes,
+                        resolution.exact.lastStateChange,
+                    )
+                    // 抄错了一位，但唯一候选足够接近 —— 替模型纠一次，比让它再猜对更有用。
+                    resolution.corrected != null -> {
+                        Log.i(
+                            TAG,
+                            "getState: corrected entity_id '$entityId' → '${resolution.corrected.entity_id}'",
+                        )
+                        readStateOrNull(resolution.corrected.entity_id)
+                            ?: DeviceState(
+                                resolution.corrected.entity_id,
+                                resolution.corrected.state,
+                                resolution.corrected.attributes,
+                                resolution.corrected.lastStateChange,
+                            )
+                    }
+                    else -> throw CapError(
+                        ENTITY_NOT_FOUND,
+                        "未找到实体 $entityId。" +
+                            suggestionSuffix(resolution.suggestions) +
+                            "可先调用 cloudlink.device.entities@v1 按设备名查（device_name 参数），" +
+                            "或调用 cloudlink.device.list@v1 确认实体 ID",
+                    )
+                }
             } else {
                 throw mapHttpError(e, entityId)
             }
         }
         return stateJson(state)
     }
+
+    /**
+     * 按设备名取状态。
+     *
+     * 设备可能有多个实体（主卧温湿度计 = 温度 / 湿度 / 电池），这里挑一个代表：
+     * 优先**可控制的**实体 —— 「灯是开还是关」「空调设了多少度」问的都是可控实体；
+     * 全是只读传感器时才退到第一个，并在 warnings 里把同设备其它实体列出来，
+     * 让模型知道它还可以追问别的字段。
+     */
+    private suspend fun stateByDeviceName(deviceName: String): JSONObject {
+        val token = requireToken()
+        val devices = api.listDevices(token).filter { it.entities.isNotEmpty() }
+        val hit = matchDeviceByName(devices, deviceName)
+            ?: throw CapError(
+                ENTITY_NOT_FOUND,
+                "device_name=$deviceName 不存在。可用设备名：${devices.map { it.name }.sorted().joinToString(" / ")}",
+            )
+        val entity = hit.entities.firstOrNull { it.domain.lowercase() !in READ_ONLY_DOMAINS }
+            ?: hit.entities.first()
+        val state = readStateOrNull(entity.entity_id)
+            ?: DeviceState(entity.entity_id, entity.state, entity.attributes, entity.lastStateChange)
+        val warnings = if (hit.entities.size > 1) {
+            listOf(
+                "设备「${hit.name}」共有 ${hit.entities.size} 个实体，本次返回的是 " +
+                    "${entity.name}（${entity.entity_id}）。" +
+                    "要看其它字段请改用 cloudlink.device.entities@v1（device_name=\"${hit.name}\"）。",
+            )
+        } else {
+            emptyList()
+        }
+        return stateJson(state, warnings)
+    }
+
+    /** 重新读一次实时状态；读不到就用清单里的快照，不因为一次网络抖动把整个调用打失败。 */
+    private suspend fun readStateOrNull(entityId: String): DeviceState? =
+        runCatching { api.getEntityState(entityId) }.getOrNull()
+
+    /**
+     * entity_id 精确匹配 → 唯一近似候选 → 候选提示，三级降级。
+     *
+     * 近似匹配只在**最佳候选唯一**且距离足够近时才纠正 —— 编辑距离打平
+     * （多个候选一样近）说明模型是凭空造的 ID（实测 `thermostat.main_bedroom_temp`
+     * 与真实候选并列 21），这时任何猜测都是错的，只能把候选摆出来让模型自己选。
+     */
+    private fun resolveEntity(
+        requested: String,
+        entities: List<com.yubing.cloudlink.data.model.Entity>,
+    ): EntityResolution {
+        val exact = entities.firstOrNull { it.entity_id == requested }
+        if (exact != null) return EntityResolution(exact = exact)
+
+        val target = normalizeEntityId(requested)
+        val scored = entities
+            .map { it to distance(target, normalizeEntityId(it.entity_id)) }
+            .sortedBy { it.second }
+        val best = scored.firstOrNull()
+        val runnerUp = scored.getOrNull(1)
+        val threshold = maxOf(MIN_CORRECTION_DISTANCE, target.length / 4)
+        val corrected = if (
+            best != null &&
+            best.second <= threshold &&
+            (runnerUp == null || best.second < runnerUp.second)
+        ) {
+            best.first
+        } else {
+            null
+        }
+        return EntityResolution(corrected = corrected, suggestions = scored.take(3).map { it.first })
+    }
+
+    /** 编辑距离只在「去掉分隔符后」比较，否则下划线错位会放大距离。 */
+    private fun normalizeEntityId(id: String): String =
+        id.lowercase().filter { it.isLetterOrDigit() }
+
+    private fun suggestionSuffix(suggestions: List<com.yubing.cloudlink.data.model.Entity>): String {
+        if (suggestions.isEmpty()) return ""
+        return "最接近的实体：" + suggestions.joinToString(" / ") { it.entity_id } + "。"
+    }
+
+    /** entity_id 解析结果。 */
+    private data class EntityResolution(
+        val exact: com.yubing.cloudlink.data.model.Entity? = null,
+        val corrected: com.yubing.cloudlink.data.model.Entity? = null,
+        val suggestions: List<com.yubing.cloudlink.data.model.Entity> = emptyList(),
+    )
 
     /**
      * @throws CapError INVALID_PARAMS、DOMAIN_MISMATCH、SERVICE_NOT_FOUND、
@@ -266,7 +403,37 @@ class DeviceControlCore @Inject constructor(
         val post = try {
             api.controlDevice(token, entityId, DeviceActionRequest(domain, service, data))
         } catch (e: HttpException) {
-            throw mapHttpError(e, entityId, domain, service)
+            // 实体不存在时，先试着把抄错的 entity_id 纠回来再执行 ——
+            // 「关灯」因为 ID 抄错一位而没关掉，比报错更糟。
+            if (e.code() == 404) {
+                val entities = api.listDevices(requireToken())
+                    .asSequence()
+                    .flatMap { it.entities.asSequence() }
+                    .toList()
+                val resolution = resolveEntity(entityId, entities)
+                val corrected = resolution.corrected
+                if (corrected == null) {
+                    throw CapError(
+                        ENTITY_NOT_FOUND,
+                        "未找到实体 $entityId。" +
+                            suggestionSuffix(resolution.suggestions) +
+                            "可先调用 cloudlink.device.entities@v1 按设备名查（device_name 参数），" +
+                            "或调用 cloudlink.device.list@v1 确认实体 ID",
+                    )
+                }
+                val actualDomain = corrected.domain.lowercase()
+                if (domain != actualDomain) {
+                    throw CapError(
+                        DOMAIN_MISMATCH,
+                        "domain $domain 与实体 $entityId 不符：该实体的 domain 是 $actualDomain。" +
+                            "请用 domain=$actualDomain 重试",
+                    )
+                }
+                Log.i(TAG, "control: corrected entity_id '$entityId' → '${corrected.entity_id}'")
+                api.controlDevice(token, corrected.entity_id, DeviceActionRequest(domain, service, data))
+            } else {
+                throw mapHttpError(e, entityId, domain, service)
+            }
         }
 
         // The backend already returns the state the plugin read from
@@ -543,6 +710,16 @@ class DeviceControlCore @Inject constructor(
 
         /** Read-only HA domains: they expose state but no services worth calling. */
         val READ_ONLY_DOMAINS = setOf("sensor", "binary_sensor", "device_tracker", "weather", "person")
+
+        /**
+         * entity_id 自动纠偏的最大编辑距离。
+         *
+         * 取 8 是量出来的：实测模型把 `1208334138` 抄成 `1_20_8_3_3_8` 时，
+         * 与真 ID 的距离是 7（次佳候选 22）；把传感器 ID 截断时是 9（次佳 12）。
+         * 而模型**凭空造**的 ID（如 `thermostat.main_bedroom_temp`）距离是 21，
+         * 且与多个候选打平 —— 那种情况一律不猜。
+         */
+        const val MIN_CORRECTION_DISTANCE = 8
 
         /**
          * Commonly used services per domain. Static on purpose: the backend
