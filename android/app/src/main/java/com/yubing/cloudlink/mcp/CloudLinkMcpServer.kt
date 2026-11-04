@@ -184,7 +184,8 @@ class CloudLinkMcpServer(
                 // 客户端。Agent 侧不该出现任何 CloudLink 专用的提示词。
                 //
                 // 工具名一律引用常量，别在这里手写 —— 手写过一轮，改名就漂了。
-                "问「有哪些设备/设备叫什么」→ 直接调用 ${DeviceToolSchema.LIST}，" +
+                "问「有哪些设备/设备叫什么」「我家连了哪些 IoT 设备」「家里有什么智能家居」" +
+                    "→ 直接调用 ${DeviceToolSchema.LIST}，" +
                     "它**不需要任何参数**，不要反问用户要区域或类型。" +
                     "它的返回里每台设备只有 name 与 area，**设备名就是后续所有操作的入口**。" +
                     "查某台设备现在的状态 → 调用 ${DeviceToolSchema.GET_STATE}，" +

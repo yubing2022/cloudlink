@@ -47,7 +47,7 @@ object DeviceToolSchema {
      * 它就没有可问的东西了。
      */
     const val DESC_LIST =
-        "列出已接入 CloudLink 的智能家居设备。返回 {count, devices[]}，" +
+        "列出已接入 CloudLink 的智能家居（IoT）设备。返回 {count, devices[]}，" +
             "每台设备只有 name（设备名）与 area（所在区域）。" +
             "**本工具不需要任何参数，直接调用即可**，不要反问用户要区域或类型。" +
             "设备名是后续所有查询与控制的入口 —— 拿到名字后再问「它是什么状态」或「把它打开」。"
@@ -92,13 +92,13 @@ object DeviceToolSchema {
         """{"type":"object","properties":{}}"""
 
     const val INPUT_ENTITIES =
-        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名，必填。用「列出设备」返回里的 name 原样填写（如 \"落地灯\"、\"主卧温湿度计\"）。不要写 entity_id，不要自己编。"},"area":{"type":"string","description":"可选。区域名（如 \"客厅\"）。**只有同名设备时才需要**用它区分。传了它就只在该区域内匹配。"}},"required":["device_name"]}"""
+        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名（如 \"落地灯\"），**优先用它**而不是 entity_id。用「列出设备」返回里的 name 原样填写，不要写 entity_id，不要自己编。"},"area":{"type":"string","description":"可选。区域名（如 \"客厅\"）。**只有同名设备时才需要**用它区分。传了它就只在该区域内匹配。"}},"required":["device_name"]}"""
 
     const val INPUT_GET_STATE =
-        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名，必填。用「列出设备」返回里的 name 原样填写（如 \"落地灯\"）。不要写 entity_id，不要凭猜测构造。"},"area":{"type":"string","description":"可选。区域名（如 \"客厅\"）。**只有同名设备时才需要**用它区分。"}},"required":["device_name"]}"""
+        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名（如 \"落地灯\"），**优先用它**而不是 entity_id。用「列出设备」返回里的 name 原样填写，不要写 entity_id，不要自己编。"},"area":{"type":"string","description":"区域名（如 \"客厅\"），**只有同名设备时才需要**用它区分。可选，不传=全部区域。"}},"required":["device_name"]}"""
 
     const val INPUT_CONTROL =
-        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名，必填。用「列出设备」返回里的 name 原样填写（如 \"落地灯\"）。不要写 entity_id，不要自己编。"},"area":{"type":"string","description":"可选。区域名（如 \"客厅\"）。**只有同名设备时才需要**用它区分。"},"service":{"type":"string","description":"必填。HA service 名。常用：turn_on（打开）/ turn_off（关闭）/ toggle（切换）；climate → set_temperature / set_hvac_mode；light → set_brightness / set_color_temp_kelvin；media_player → volume_set / media_play / media_pause；button → press。sensor / binary_sensor 是只读域，没有可调用的 service。传错时返回 SERVICE_NOT_FOUND，并在 message 里附可用 service。"},"entity_name":{"type":"string","description":"可选。实体名（如 \"温度\"、\"开关\"），用「查询设备实体」返回里的 name 原样填写。只有同一台设备有多个实体、你要控制其中特定一个时才需要。不传就由服务端自动挑主实体。"},"data":{"type":"object","description":"service 参数，必须是 JSON 对象（object），不能是字符串。key 必须是该 service 的真实字段名。例：{\"brightness\":200,\"color_temp_kelvin\":3000}。边界：brightness 有效范围 1-255；brightness=0 等同关灯。不需要额外参数时省略本参数，不要传 null。"}},"required":["device_name","service"]}"""
+        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名（如 \"落地灯\"），**优先用它**而不是 entity_id。用「列出设备」返回里的 name 原样填写，不要写 entity_id，不要自己编。"},"area":{"type":"string","description":"可选。区域名（如 \"客厅\"）。**只有同名设备时才需要**用它区分。"},"service":{"type":"string","description":"必填。HA service 名。常用：turn_on（打开）/ turn_off（关闭）/ toggle（切换）；climate → set_temperature / set_hvac_mode；light → set_brightness / set_color_temp_kelvin；media_player → volume_set / media_play / media_pause；button → press。sensor / binary_sensor 是只读域，没有可调用的 service。传错时返回 SERVICE_NOT_FOUND，并在 message 里附可用 service。"},"entity_name":{"type":"string","description":"可选。实体名（如 \"温度\"、\"开关\"），用「查询设备实体」返回里的 name 原样填写。只有同一台设备有多个实体、你要控制其中特定一个时才需要。不传就由服务端自动挑主实体。"},"data":{"type":"object","description":"service 参数，必须是 JSON 对象（object），不能是字符串。key 必须是该 service 的真实字段名。例：{\"brightness\":200,\"color_temp_kelvin\":3000}。边界：brightness 有效范围 1-255；brightness=0 等同关灯。不需要额外参数时省略本参数，不要传 null。"}},"required":["device_name","service"]}"""
 
     // ---------------------------------------------------------- outputSchema
     // AgentBridge 需要 outputSchema（用于结果契约）；MCP 侧不需要，结果直接是 JSON 文本。
