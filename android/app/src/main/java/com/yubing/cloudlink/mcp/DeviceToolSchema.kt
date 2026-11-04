@@ -48,48 +48,43 @@ object DeviceToolSchema {
      */
     const val DESC_LIST =
         "列出已接入 CloudLink 的智能家居设备。返回 {count, devices[]}，" +
-            "每台设备含 name/area/manufacturer/model/domains/entity_count/readonly_count/entities[]。" +
-            "entities[] 只列**能控制的**实体（灯、插座、空调、音箱等），每项含 " +
-            "entity_id/domain/name/state；只读实体（温湿度计、传感器）只给 readonly_count，" +
-            "需要它们的 entity_id 时再调用「列出设备实体」工具。" +
-            "【重要】本工具**不需要任何参数，直接调用即可**，不要反问用户要区域或类型。" +
-            "要控制设备，从返回的 entities[] 里取 entity_id 与 domain，再调用控制工具。"
+            "每台设备只有 name（设备名）与 area（所在区域）。" +
+            "**本工具不需要任何参数，直接调用即可**，不要反问用户要区域或类型。" +
+            "设备名是后续所有查询与控制的入口 —— 拿到名字后再问「它是什么状态」或「把它打开」。"
 
     const val DESC_ENTITIES =
-        "列出实体（含只读传感器），可按 device_name / area / domain 过滤，" +
-            "**三个参数全部可选，全都不传就是全部实体**。" +
-            "返回 {count, devices[]}，每台设备含 device/area/entity_count/entities[]，" +
-            "每个实体含 entity_id/domain/name/state/controllable" +
-            "（controllable=false 表示只读，不能控制）。" +
-            "典型用法：查某个区域的某类设备 → device_name 省略、传 area + domain；" +
-            "查某台设备的完整实体 → 传 device_name（用「列出设备」返回里的 name 原样填写）。" +
-            "**只想知道某台设备现在是开还是关 → 传 device_name 即可，本工具的返回里就带 state**，" +
-            "不需要再单独查状态。" +
-            "只是想看有哪些设备的话，用「列出设备」工具就够了（零参数）。"
+        "查询**某一台设备**下的实体（灯、开关、传感器等）及其当前状态。" +
+            "**device_name 必填**，用「列出设备」返回里的 name 原样填写（如 \"落地灯\"）；" +
+            "**同名设备请加 area 参数区分**（如 \"客厅\"）。" +
+            "返回 {device, area, count, entities[]}，每个实体含 name（简短实体名）、" +
+            "domain（light/switch/sensor…）与 state（当前状态）。" +
+            "本工具**不需要 entity_id** —— 实体名（简短中文名）就够用。"
 
     const val DESC_GET_STATE =
-        "**优先用 device_name 查状态**（如 \"落地灯\"），服务端会自己匹配实体，不用记 entity_id。" +
-            "获取单个设备实体的当前状态与属性（如灯是否开、亮度值、空调设定温度）。" +
-            "**entity_id 与 device_name 二选一**：知道 ID 时传 entity_id，" +
-            "只知道设备名时传 device_name，服务端会自己匹配实体。" +
-            "entity_id 很长（如 light.yeelink_cn_1208334138_mbulb3_s_2），" +
-            "抄错一位就会查不到。" +
-            "返回 {entity_id, state, attributes, last_state_change}。" +
+        "查询**某一台设备**现在的状态与关键属性（如灯是否开、亮度、空调温度）。" +
+            "**device_name 必填**（用「列出设备」返回里的 name 原样填写）；" +
+            "**同名设备请加 area 参数区分**。" +
+            "返回 {device, area, state, attributes, last_state_change, other_entities[]}，" +
+            "attributes 只含有意义的字段（brightness / color_temp_kelvin / temperature / humidity…）。" +
             "state 是 HA 原始状态值；unavailable 表示设备已离线（此时 control 不会真正生效）。" +
-            "也可以用「列出设备实体」工具按设备名查，它的返回里直接带 state。"
+            "想知道这台设备**有哪些**实体，用「查询设备实体」工具。"
 
     const val DESC_CONTROL =
-        "调用 Home Assistant service 控制设备（开关灯、调亮度、开关插座、设定空调等），" +
-            "底层等价于 hass.services.call。" +
-            "成功时返回动作后的 {entity_id, state, attributes, last_state_change}，" +
-            "state=unavailable 会以 DEVICE_OFFLINE 报错（HA 接收了指令但设备未执行）；" +
-            "data 里疑似拼错的字段名会出现在 warnings 数组里。" +
-            "参数大小写不敏感，但 domain 必须与 entity_id 前缀一致（服务端只校验、不推断）。"
+        "控制设备：开关灯、调亮度、开关插座、设定空调等，底层等价于 hass.services.call。" +
+            "**device_name 必填**（用「列出设备」返回里的 name 原样填写）；" +
+            "**同名设备请加 area 参数区分**；**service 必填**。" +
+            "服务端会自动挑这台设备上支持该 service 的实体，你**不需要**给 entity_id 或 domain。" +
+            "service 常用值：turn_on（开）/ turn_off（关）/ toggle（切换）；" +
+            "climate → set_temperature / set_hvac_mode；light → set_brightness / set_color_temp_kelvin；" +
+            "media_player → volume_set / media_play / media_pause；button → press。" +
+            "成功时返回动作后的 {device, area, entity, state, attributes, last_state_change}；" +
+            "state=unavailable 会以 DEVICE_OFFLINE 报错（HA 接收了指令但设备未执行）。"
 
     // ----------------------------------------------------------- inputSchema
 
     /**
      * 零属性 —— 不是漏了，是刻意的。
+     *
      * 一旦这里出现任何可填属性，弱模型就会去凑值；把「填什么」的决策权
      * 全部交回服务端（用 device_entities 按设备名钻取），模型只需无参调用。
      */
@@ -97,20 +92,13 @@ object DeviceToolSchema {
         """{"type":"object","properties":{}}"""
 
     const val INPUT_ENTITIES =
-        """{"type":"object","properties":{"device_name":{"type":"string","description":"可选。设备名，用「列出设备」工具返回里的 name 原样填写（如 \"主卧温湿度计\"）。不要写 entity_id，不要自己编。不传=全部设备。"},"area":{"type":"string","description":"可选。区域名，如 客厅。不传=全部区域。未知值返回 INVALID_FILTER 并附可用 area 列表。"},"domain":{"type":"string","description":"可选。实体 domain，如 light / sensor / switch。不传=全部 domain。未知值返回 INVALID_FILTER 并附可用 domain 列表。"}}}"""
+        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名，必填。用「列出设备」返回里的 name 原样填写（如 \"落地灯\"、\"主卧温湿度计\"）。不要写 entity_id，不要自己编。"},"area":{"type":"string","description":"可选。区域名（如 \"客厅\"）。**只有同名设备时才需要**用它区分。传了它就只在该区域内匹配。"}},"required":["device_name"]}"""
 
-    /**
-     * entity_id 与 device_name **二选一**，都不必填。
-     *
-     * 之前 entity_id 是 required，弱模型只能硬着头皮去抄那串长 ID，
-     * 抄错一位就查不到（实测把 1208334138 抄成 1_20_8_3_3_8）。
-     * 既然「设备名 → 实体」本来就是服务端的事，就别让模型背这串东西。
-     */
     const val INPUT_GET_STATE =
-        """{"type":"object","properties":{"entity_id":{"type":"string","description":"实体 ID，形如 light.yeelink_cn_1208334138_mbulb3_s_2（全小写带 domain 前缀）。与 device_name 二选一，不要凭猜测构造；拿不准就用 device_name。"},"device_name":{"type":"string","description":"设备名（如 \"落地灯\"、\"主卧温湿度计\"），服务端会自动匹配到它的实体。与 entity_id 二选一，**不知道 entity_id 时优先用它，不要凭猜测填 entity_id**。"}},"required":[]}"""
+        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名，必填。用「列出设备」返回里的 name 原样填写（如 \"落地灯\"）。不要写 entity_id，不要凭猜测构造。"},"area":{"type":"string","description":"可选。区域名（如 \"客厅\"）。**只有同名设备时才需要**用它区分。"}},"required":["device_name"]}"""
 
     const val INPUT_CONTROL =
-        """{"type":"object","properties":{"entity_id":{"type":"string","description":"目标实体 ID，形如 light.yeelink_cn_1208334138_mbulb3_s_2（全小写）。必须先用「列出设备」工具获取，不要凭猜测构造。大小写不敏感。"},"domain":{"type":"string","description":"实体 domain，必须与 entity_id 的前缀一致（light.xxx → light，switch.xxx → switch）。服务端只校验不推断，不一致返回 DOMAIN_MISMATCH。大小写不敏感。常见值：light / switch / climate / media_player / number / select / text / button。"},"service":{"type":"string","description":"HA service 名，大小写不敏感。各 domain 常用 service：light、switch → turn_on / turn_off / toggle；climate → set_temperature / set_hvac_mode / turn_on / turn_off；media_player → volume_set / media_play / media_pause / turn_on / turn_off；number → set_value；select → select_option；text → set_value；button → press。sensor / binary_sensor 为只读域，没有可调用的 service。传错时返回 SERVICE_NOT_FOUND，并在 message 里附该 domain 可用的 service。"},"data":{"type":"object","description":"service 参数，必须是 JSON 对象（object），不能是字符串。key 必须是该 service 的真实字段名：HA 对未知字段多数情况静默忽略（部分 service 会直接报错，如 light 会提示 did you mean ...）；疑似拼错时返回结果里的 warnings 也会提示。例：{\"brightness\":200,\"color_temp_kelvin\":3000}。边界：brightness 有效范围 1-255，超出由 HA clamp 到 255；brightness=0 等同关灯。不需要额外参数时省略本参数，不要传 null。"}},"required":["entity_id","domain","service"]}"""
+        """{"type":"object","properties":{"device_name":{"type":"string","description":"设备名，必填。用「列出设备」返回里的 name 原样填写（如 \"落地灯\"）。不要写 entity_id，不要自己编。"},"area":{"type":"string","description":"可选。区域名（如 \"客厅\"）。**只有同名设备时才需要**用它区分。"},"service":{"type":"string","description":"必填。HA service 名。常用：turn_on（打开）/ turn_off（关闭）/ toggle（切换）；climate → set_temperature / set_hvac_mode；light → set_brightness / set_color_temp_kelvin；media_player → volume_set / media_play / media_pause；button → press。sensor / binary_sensor 是只读域，没有可调用的 service。传错时返回 SERVICE_NOT_FOUND，并在 message 里附可用 service。"},"entity_name":{"type":"string","description":"可选。实体名（如 \"温度\"、\"开关\"），用「查询设备实体」返回里的 name 原样填写。只有同一台设备有多个实体、你要控制其中特定一个时才需要。不传就由服务端自动挑主实体。"},"data":{"type":"object","description":"service 参数，必须是 JSON 对象（object），不能是字符串。key 必须是该 service 的真实字段名。例：{\"brightness\":200,\"color_temp_kelvin\":3000}。边界：brightness 有效范围 1-255；brightness=0 等同关灯。不需要额外参数时省略本参数，不要传 null。"}},"required":["device_name","service"]}"""
 
     // ---------------------------------------------------------- outputSchema
     // AgentBridge 需要 outputSchema（用于结果契约）；MCP 侧不需要，结果直接是 JSON 文本。

@@ -182,6 +182,85 @@ class DeviceControlCore @Inject constructor(
             ?: devices.firstOrNull { it.name.equals(wantName, ignoreCase = true) }
             ?: devices.firstOrNull { it.name.contains(wantName, ignoreCase = true) }
 
+    /**
+     * 按名称**唯一地**解析出一台设备。
+     *
+     * ## 为什么需要它
+     *
+     * [listEntities] 遇到多个同名设备时**只取第一个**（[matchDeviceByName] 返回首个命中）
+     * —— 对本地 MCP server 来说这是危险的：模型问「落地灯」，如果家里有两台
+     * 「落地灯」，会静默选中错误的那台，然后去控制它。
+     *
+     * 本地 MCP 层用它做**消歧**：命中唯一就采用；命中多个就把候选列出来，
+     * 让模型改用 `area` 区分 —— **不替模型猜**。
+     *
+     * ## 对其它通道的影响
+     *
+     * 这是**新增**的只读查询，不改变 [listDevices] / [listEntities] / [getState] /
+     * [control] 任何现有方法的行为，AgentBridge 通道完全不受影响。
+     *
+     * @throws CapError INVALID_PARAMS（缺 device_name）、ENTITY_NOT_FOUND（不存在或有多个同名）
+     */
+    suspend fun resolveDevice(deviceNameRaw: String, areaRaw: String = ""): ResolvedDevice {
+        val wantName = deviceNameRaw.trim()
+        val wantArea = areaRaw.trim()
+        if (wantName.isEmpty()) {
+            throw CapError(INVALID_PARAMS, "缺少必填参数：device_name")
+        }
+        val token = requireToken()
+        val devices = api.listDevices(token)
+            .filter { it.entities.isNotEmpty() }
+            // 伪设备（名字其实是 entity_id）不出现在模型可见的任何地方，
+            // 包括「设备名不存在」错误里列出的候选。
+            .filterNot { isEntityIdLike(it.name) }
+
+        // 先用 area 收窄 —— 用户给了区域时，同名设备就能被区分开。
+        val scoped = if (wantArea.isEmpty()) {
+            devices
+        } else {
+            devices.filter { (it.area ?: "").equals(wantArea, ignoreCase = true) }
+        }
+
+        val exact = scoped.filter { it.name == wantName }
+            .ifEmpty { scoped.filter { it.name.equals(wantName, ignoreCase = true) } }
+        val candidates = if (exact.isNotEmpty()) exact else scoped.filter { it.name.contains(wantName, ignoreCase = true) }
+
+        if (candidates.isEmpty()) {
+            val names = devices.map { it.name }.distinct().sorted()
+            throw CapError(
+                ENTITY_NOT_FOUND,
+                "device_name=$wantName 不存在。可用设备名：${names.joinToString(" / ")}",
+            )
+        }
+        if (candidates.size > 1) {
+            val where = candidates.joinToString(" / ") { d -> "${d.name}（${d.area ?: "未知区域"}）" }
+            throw CapError(
+                ENTITY_NOT_FOUND,
+                "有 ${candidates.size} 个设备叫「$wantName」：$where。" +
+                    "请加上 area 参数区分后重试。",
+            )
+        }
+        val hit = candidates.first()
+        return ResolvedDevice(name = hit.name, area = hit.area, entities = hit.entities)
+    }
+
+    /**
+     * 某个 service 常见于哪些 domain —— [COMMON_SERVICES] 的反向索引。
+     *
+     * 用来在「一台设备有多个可控制实体」时挑对目标：比如「米家智能插座3」有 28 个
+     * 实体，其中可控制的有开关、物理控制锁、勿扰模式开关…… 光看 domain 分不出来，
+     * 但 `turn_on` 只在 switch/light 这类 domain 上有意义。
+     *
+     * 同样只是**新增**查询，不影响任何现有行为。
+     */
+    fun domainsSupportingService(service: String): List<String> {
+        val want = service.trim().lowercase()
+        if (want.isEmpty()) return emptyList()
+        return COMMON_SERVICES.filterValues { services -> services.any { it.equals(want, ignoreCase = true) } }
+            .keys
+            .sorted()
+    }
+
     /** 单台设备的实体块。两条过滤分支共用，保证输出结构完全一致。 */
     private fun deviceJson(
         device: com.yubing.cloudlink.data.model.HomeDevice,
@@ -692,8 +771,18 @@ class DeviceControlCore @Inject constructor(
         else -> v.javaClass.simpleName
     }
 
-    private companion object {
+    companion object {
         const val TAG = "CloudLinkCore"
+
+        /**
+         * 设备名长得像 entity_id —— HA 侧没有 friendly_name 时拿 ID 兜底了
+         * （实测出现过 `light.cuco_cn_2051041278_v3_s_13_indicator_light`）。
+         *
+         * 这种「设备名」对模型是毒：它分不清这是名字还是 ID，
+         * 于是可能把它当 entity_id 填进参数。所以模型可见的列表里要剔掉。
+         */
+        fun isEntityIdLike(name: String): Boolean =
+            name.trim().lowercase().matches(Regex("^[a-z_]+\\.[a-z0-9_]{9,}$"))
 
         // Stable error codes surfaced to the MCP caller (see CapError / mapHttpError).
         const val NOT_AUTHENTICATED = "NOT_AUTHENTICATED"
@@ -753,3 +842,15 @@ class DeviceControlCore @Inject constructor(
  * 调用方据此分支处理，而不是匹配中文消息串。
  */
 class CapError(val code: String, message: String) : Exception(message)
+
+/**
+ * 唯一解析出来的一台设备。
+ *
+ * 只给本地 MCP 层用（消歧 + 取该设备的实体），
+ * 不参与 AgentBridge 通道的返回结构。
+ */
+data class ResolvedDevice(
+    val name: String,
+    val area: String?,
+    val entities: List<com.yubing.cloudlink.data.model.Entity>,
+)

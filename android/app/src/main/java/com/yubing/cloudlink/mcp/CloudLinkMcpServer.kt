@@ -179,19 +179,26 @@ class CloudLinkMcpServer(
             .put("serverInfo", JSONObject().put("name", SERVER_NAME).put("version", versionName))
             .put(
                 "instructions",
+                // **CloudLink 的全部定制都写在这里** —— server 的 instructions 是
+                // MCP 规范里「server 作者写给模型的权威说明」，随协议自然分发到任何
+                // 客户端。Agent 侧不该出现任何 CloudLink 专用的提示词。
+                //
                 // 工具名一律引用常量，别在这里手写 —— 手写过一轮，改名就漂了。
                 "问「有哪些设备/设备叫什么」→ 直接调用 ${DeviceToolSchema.LIST}，" +
                     "它**不需要任何参数**，不要反问用户要区域或类型。" +
-                    "要控制设备 → 从 ${DeviceToolSchema.LIST} 返回的 entities[] 里取 " +
-                    "entity_id 与 domain，再调用 ${DeviceToolSchema.CONTROL}；" +
-                    "**查状态优先调用 ${DeviceToolSchema.ENTITIES} 并传 device_name" +
-                    "（如 device_name=\"落地灯\"），它的返回里就直接带 state，" +
-                    "你不需要记住 entity_id**；" +
-                    "只有当 entity_id 已经在手上时，才调用 ${DeviceToolSchema.GET_STATE}。" +
-                    "需要只读传感器（温湿度计等）的 entity_id 时用 ${DeviceToolSchema.ENTITIES}。" +
+                    "它的返回里每台设备只有 name 与 area，**设备名就是后续所有操作的入口**。" +
+                    "查某台设备现在的状态 → 调用 ${DeviceToolSchema.GET_STATE}，" +
+                    "参数 device_name 填设备名（如 \"落地灯\"）。" +
+                    "想知道这台设备有哪些实体 → 调用 ${DeviceToolSchema.ENTITIES}，" +
+                    "参数 device_name 填设备名。" +
+                    "控制设备 → 调用 ${DeviceToolSchema.CONTROL}，参数 device_name 填设备名、" +
+                    "service 填 turn_on / turn_off / toggle。" +
+                    "**你不需要 entity_id，也不需要 domain**：这四个工具都以设备名为入口，" +
+                    "服务端会自己定位到正确的实体。" +
+                    "同名设备会报错并列出候选，这时加上 area 参数区分即可。" +
                     "出错时结果文本里有 error_code，按它修正参数，而不是原样重试" +
-                    "（INVALID_PARAMS 是类型/写法错，ENTITY_NOT_FOUND 是名字或 ID 不存在，" +
-                    "消息里会列出最接近的实体）。",
+                    "（INVALID_PARAMS 是类型/写法错，ENTITY_NOT_FOUND 是设备名不存在，" +
+                    "或者有同名设备需要用 area 区分）。",
             )
     }
 
@@ -216,28 +223,73 @@ class CloudLinkMcpServer(
         return try {
             val result = runBlocking {
                 when (name) {
-                    DeviceToolSchema.LIST -> core.listDevices()
+                    DeviceToolSchema.LIST -> McpDeviceView.deviceListView(core.listDevices())
 
-                    DeviceToolSchema.ENTITIES -> core.listEntities(
-                        core.optionalString(args, "device_name", "\"主卧温湿度计\""),
-                        core.optionalString(args, "area", "\"客厅\""),
-                        core.optionalString(args, "domain", "\"light\""),
-                    )
-
-                    DeviceToolSchema.GET_STATE ->
-                        core.getState(
-                            core.optionalString(args, "entity_id", "\"light.xx_yy\""),
-                            core.optionalString(args, "device_name", "\"落地灯\""),
+                    // 「有哪些设备」只列设备；「这台设备有什么」才钻到实体。
+                    DeviceToolSchema.ENTITIES -> {
+                        val device = core.resolveDevice(
+                            core.requiredString(args, "device_name", "\"设备名\""),
+                            core.optionalString(args, "area", "\"区域名\""),
                         )
+                        McpDeviceView.entitiesView(device)
+                    }
 
-                    DeviceToolSchema.CONTROL -> core.control(
-                        core.requiredString(args, "entity_id", "\"light.xx_yy\""),
-                        core.requiredString(args, "domain", "\"light\""),
-                        core.requiredString(args, "service", "\"turn_on\""),
-                        core.requireDataMap(
+                    DeviceToolSchema.GET_STATE -> {
+                        val device = core.resolveDevice(
+                            core.requiredString(args, "device_name", "\"设备名\""),
+                            core.optionalString(args, "area", "\"区域名\""),
+                        )
+                        val primary = McpDeviceView.pickPrimaryEntity(device)
+                            ?: throw CapError(
+                                ENTITY_NOT_FOUND,
+                                "设备「${device.name}」下没有可查询的实体",
+                            )
+                        McpDeviceView.deviceStateView(
+                            device,
+                            primary,
+                            core.getState(primary.entity_id),
+                        )
+                    }
+
+                    // 控制：服务端自己挑「支持该 service 的实体」，
+                    // 模型不需要给 entity_id，也不需要给 domain（domain 会不匹配）。
+                    DeviceToolSchema.CONTROL -> {
+                        val device = core.resolveDevice(
+                            core.requiredString(args, "device_name", "\"设备名\""),
+                            core.optionalString(args, "area", "\"区域名\""),
+                        )
+                        val service = core.requiredString(args, "service", "\"turn_on\"")
+                        val data = core.requireDataMap(
                             if (args.has("data") && !args.isNull("data")) args.opt("data") else null,
-                        ),
-                    )
+                        )
+                        // 给了 entity_name 就精确控制那一个；没给就按 service
+                        // 反查它常见于哪些 domain，再挑主功能。
+                        val entityName = core.optionalString(args, "entity_name", "\"实体名\"")
+                        val target = if (entityName.isNotBlank()) {
+                            McpDeviceView.pickEntityByShortName(device, entityName)
+                                ?: throw CapError(
+                                    ENTITY_NOT_FOUND,
+                                    "设备「${device.name}」下没有名为「$entityName」的实体。" +
+                                        "可用「查询设备实体」工具查看它有哪些实体",
+                                )
+                        } else {
+                            McpDeviceView.pickControlEntity(
+                                device,
+                                service,
+                                core.domainsSupportingService(service),
+                            ) ?: throw CapError(
+                                ENTITY_NOT_FOUND,
+                                "设备「${device.name}」下没有可控制的实体（只有只读实体）",
+                            )
+                        }
+                        val controlResult = core.control(
+                            target.entity_id,
+                            target.domain.lowercase(),
+                            service,
+                            data,
+                        )
+                        McpDeviceView.controlResultView(device, target, controlResult)
+                    }
 
                     else -> throw CapError(TOOL_NOT_FOUND, "unknown tool: $name")
                 }
@@ -398,6 +450,9 @@ class CloudLinkMcpServer(
         private const val HDR_SESSION_ID = "Mcp-Session-Id"
         private const val MIME_JSON = "application/json"
         private const val TOOL_NOT_FOUND = "TOOL_NOT_FOUND"
+
+        /** 与 [DeviceControlCore] 的同名错误码保持一致（那边是 private，这里各存一份）。 */
+        private const val ENTITY_NOT_FOUND = "ENTITY_NOT_FOUND"
         private const val INTERNAL_ERROR_CODE = "INTERNAL_ERROR"
 
         /**
