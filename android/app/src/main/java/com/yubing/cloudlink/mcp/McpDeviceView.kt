@@ -112,24 +112,40 @@ internal object McpDeviceView {
      * 括号里的区域顺手当消歧依据 —— 模型**不需要编辑**，只需要抄。
      *
      * 15 台设备 → 约 300 字节（原 9818，且模型不用再解一遍）。
+     *
+     * ## 区域只给「重名」的设备
+     *
+     * 真机实测（2026-11-05）：把「名字（区域）」原样给模型，它**抄不准** ——
+     * 工具结果 218 字符，模型输出 168 字符，差的 50 字符正好是 14 个 `（区域）`。
+     * 模型把 `名字（区域）` 理解成「名字 + 元数据」，只可靠地抄走名字部分，
+     * 区域要么丢失、要么错位到别的行（`Sound` 和 `卧室` 被拆成两行）。
+     *
+     * 所以清单默认**只给设备名** —— 名字才是模型必须一字不差搬过去的东西。
+     * 只有**重名**的设备才补上区域：那是唯一真正需要消歧的地方，
+     * 也是唯一值得让模型多抄几个字的地方。
      */
     fun deviceListText(coreResult: JSONObject): String {
         val devices = coreResult.optJSONArray("devices") ?: JSONArray()
-        val lines = StringBuilder()
-        var count = 0
+        val rows = ArrayList<Pair<String, String>>()
         for (i in 0 until devices.length()) {
             val d = devices.optJSONObject(i) ?: continue
             val name = d.optString("name").trim()
             if (name.isBlank() || DeviceControlCore.isEntityIdLike(name)) continue
             val rawArea = d.opt("area")
             val area = if (rawArea is String) rawArea.trim() else ""
+            rows.add(name to area)
+        }
+        // 只有重名的设备才需要区域。
+        val nameCounts = rows.groupingBy { it.first }.eachCount()
+        val lines = StringBuilder()
+        for ((name, area) in rows) {
+            val duplicated = (nameCounts[name] ?: 0) > 1
             lines.append("- ").append(name)
-            if (area.isNotEmpty()) lines.append("（").append(area).append("）")
+            if (duplicated && area.isNotEmpty()) lines.append("（").append(area).append("）")
             lines.append('\n')
-            count++
         }
         return buildString {
-            append("共 ").append(count).append(" 台设备：\n")
+            append("共 ").append(rows.size).append(" 台设备：\n")
             append(lines)
         }
     }
