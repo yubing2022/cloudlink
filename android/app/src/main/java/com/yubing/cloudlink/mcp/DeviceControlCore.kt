@@ -128,10 +128,11 @@ class DeviceControlCore @Inject constructor(
         if (wantName.isNotEmpty()) {
             val hit = matchDeviceByName(devices, wantName)
             if (hit == null) {
-                val names = devices.map { it.name }.sorted()
+                val names = devices.map { it.name }.distinct()
                 throw CapError(
                     ENTITY_NOT_FOUND,
-                    "device_name=$wantName 不存在。可用设备名：${names.joinToString(" / ")}",
+                    "device_name=$wantName 不存在。" +
+                        DeviceNameMatcher.suggestionText(listOf(wantName), names),
                 )
             }
             return JSONObject()
@@ -267,10 +268,40 @@ class DeviceControlCore @Inject constructor(
             )
         }
 
-        val names = devices.map { it.name }.distinct().sorted()
+        // 三档都没命中（精确 / 大小写 / 连续子串）时，再试**近邻纠偏**。
+        //
+        // 「连续子串」抓不到「漏抄中间一个字」：床尾灯 的 床/尾/灯 不相邻，
+        // 所以「床灯」匹配不上。模型在英文提问时就会这么干 ——
+        // 把 bedside lamp 直译成「床灯」，而不是照抄清单里的「床尾灯」。
+        //
+        // 但**只在唯一近邻时**纠偏：床灯 到 床头灯 / 床尾灯 距离都是 1，
+        // 两个一样近说明模型指哪一个不可知，猜错就是打开了另一盏灯。
+        // 那种情况交给下一段的错误信息 —— 近邻排到最前，让模型自己抄原名重试。
+        //
+        // 逐个候选试（和上面的匹配链一样）：候选名是剥掉 markdown 后的干净名，
+        // 且显式 area 仍然生效 —— 用户说了区域就不该纠偏到别的区域去。
+        for ((wantName, wantArea) in candidates) {
+            val scoped = if (wantArea.isEmpty()) {
+                devices
+            } else {
+                devices.filter { (it.area ?: "").equals(wantArea, ignoreCase = true) }
+            }
+            if (scoped.isEmpty()) continue
+            val scopedNames = scoped.map { it.name }.distinct()
+            val nearMatch = DeviceNameMatcher.uniqueNearMatch(wantName, scopedNames) ?: continue
+            val hit = scoped.first { it.name == nearMatch }
+            // 用 W 而不是 I：实测本机 logcat 的 I 级别整体不输出
+            // （连既有的 "dropped N devices" 那条也看不到），纠偏属于
+            // 「模型写错了、服务端替它兜住」的行为，值得和错误同级可见。
+            Log.w(TAG, "resolveDevice: corrected device_name '$wantName' → '$nearMatch'")
+            return ResolvedDevice(name = hit.name, area = hit.area, entities = hit.entities)
+        }
+
+        val names = devices.map { it.name }.distinct()
         throw CapError(
             ENTITY_NOT_FOUND,
-            "device_name=${deviceNameRaw.trim()} 不存在。可用设备名：${names.joinToString(" / ")}",
+            "device_name=${deviceNameRaw.trim()} 不存在。" +
+                DeviceNameMatcher.suggestionText(candidates.map { it.first }, names),
         )
     }
 
@@ -469,7 +500,11 @@ class DeviceControlCore @Inject constructor(
         val hit = matchDeviceByName(devices, deviceName)
             ?: throw CapError(
                 ENTITY_NOT_FOUND,
-                "device_name=$deviceName 不存在。可用设备名：${devices.map { it.name }.sorted().joinToString(" / ")}",
+                "device_name=$deviceName 不存在。" +
+                    DeviceNameMatcher.suggestionText(
+                        listOf(deviceName),
+                        devices.map { it.name }.distinct(),
+                    ),
             )
         val entity = hit.entities.firstOrNull { it.domain.lowercase() !in READ_ONLY_DOMAINS }
             ?: hit.entities.first()

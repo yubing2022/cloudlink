@@ -80,4 +80,7 @@ dependencies {
     // Local HTTP engine for the MCP server (127.0.0.1:8731, PalmClaw)
     implementation(libs.nanohttpd)
 
+    // Unit test — pure JVM tests for the MCP matching logic (DeviceNameMatcher).
+    testImplementation(libs.junit)
+
 }
