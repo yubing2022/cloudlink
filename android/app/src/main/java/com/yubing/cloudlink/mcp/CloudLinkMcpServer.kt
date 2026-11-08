@@ -19,11 +19,24 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * 协议：MCP **Streamable HTTP（2025-11-25）**，PalmClaw 的 AUTO 模式首选它。
  *
- * ⚠️ 这里**必须**支持 GET 的长连接 SSE 流（见 [handleGet]）。规范（2025-03-26 起）
- * 要求客户端在 initialize 之后开一个 GET 流接收服务端通知；官方 Kotlin SDK 正是
- * 这么实现的。之前这里对 GET 返回 405，理由是「客户端拿到 405 会回退 legacy SSE」——
- * **这个假设是错的**，实测会让 transport 在握手后失效，表现为「工具调用 30 秒超时、
- * 服务端一条 POST 日志都没有」。
+ * ## GET 一律 405（这是刻意的，不要改回去）
+ *
+ * 规范允许服务端对 GET 返回 405 —— 意思是「本服务端不推送服务端发起通知」。
+ * 本 server 确实没有这类通知（工具结果都是 POST 的直接响应），所以 405 是准确的。
+ *
+ * ⚠️ 曾这里实现过 GET 的长连接 SSE 流，结果把服务端拖死了：NanoHTTPD
+ * **每连接一个线程**，而 SSE 流必须一直开着到客户端断开 —— 每开一个流就
+ * 占死一个线程，且**永远不归还**。客户端重连几次，线程就攒到几十个；
+ * 到某个点 accept 队列被打满，之后**连 initialize 都不再响应**
+ * （实测 curl 直连也是 http=000 超时），整个 MCP 链路瘫掉。
+ *
+ * 顺带纠正一个错误归因：曾以为「GET 405 会让官方 SDK 判定 server 不支持
+ * Streamable HTTP，transport 被判废，后续 POST 根本发不出去」。
+ * 那个现象是真的，但**原因不是 405** —— 是旧会话里积累了「工具调用超时」的
+ * 失败记录，模型学乖了干脆不调工具；再加上 ColorOS 会回收后台的
+ * CloudLink 进程（前台 Service 也保不住）。把 GET 改回 405 后，
+ * 工具调用**完全正常**（`tools/call device_control → ENTITY_NOT_FOUND`，
+ * 服务端日志、错误码、候选清单全部到位）。
  *
  * 端口固定在 8731，且**只绑 127.0.0.1**：
  *  - 绝不能监听 0.0.0.0，否则同网其它设备都能控制你家设备；
@@ -48,60 +61,6 @@ class CloudLinkMcpServer(
      */
     private val sessions: ConcurrentHashMap<String, Long> = ConcurrentHashMap()
 
-    /**
-     * 打开中的 GET SSE 流：连接 → 输出流。
-     *
-     * 用 `IHTTPSession` 做键而不是 session id：同一个 MCP 会话理论上可以开
-     * 多个 GET 流（规范允许），按连接记更准确。
-     */
-    private val sseStreams: ConcurrentHashMap<IHTTPSession, java.io.OutputStream> =
-        ConcurrentHashMap()
-
-    /**
-     * SSE 保活线程。
-     *
-     * ## 重要：这里**不写任何内容**
-     *
-     * 规范允许服务端用 SSE 注释行（`: ping`）保活，但实测官方 Kotlin SDK
-     * **不接受注释行**：客户端收到第一个 `: ping` 就把流关掉了 ——
-     * 服务端这边表现为「写 pipe 失败」（`SSE stream closed by peer`），
-     * 客户端那边表现为 transport 崩掉、后续工具调用超时。
-     *
-     * 也就是说，用注释行保活反而**害**了 transport。
-     *
-     * CloudLink 目前也没有需要主动推送的通知（工具结果都是 POST 的直接响应），
-     * 所以最稳的做法是：**开着流但什么都不写**。连接保持，客户端的 transport
-     * 保持健康，TCP 的空闲超时由客户端侧的 socketTimeoutMillis 管
-     * （KratuAgent 那边把 SSE 的 socket timeout 设成了 null，即不主动断）。
-     *
-     * 单线程 + daemon：server 进程被回收时这个线程不该拦住退出。
-     */
-    private val sseKeepAlive: Thread = Thread({
-        while (true) {
-            try {
-                Thread.sleep(SSE_KEEP_ALIVE_INTERVAL_MS)
-            } catch (e: InterruptedException) {
-                return@Thread
-            }
-            // 只做「连接还在吗」的探测，不写入任何字节 ——
-            // 写注释行会让客户端断开（见上面的说明）。
-            sseStreams.entries.removeIf { (httpSession, out) ->
-                val alive = runCatching {
-                    // flush 一个空写入，确认 pipe 还没被对端关闭
-                    out.flush()
-                    true
-                }.getOrDefault(false)
-                if (!alive) {
-                    Log.d(TAG, "SSE stream closed by peer")
-                    runCatching { out.close() }
-                }
-                !alive
-            }
-        }
-    }, "cloudlink-sse-keepalive").apply {
-        isDaemon = true
-        start()
-    }
 
     // ------------------------------------------------------------------ HTTP
 
@@ -118,7 +77,7 @@ class CloudLinkMcpServer(
                 uri != PATH -> json(Status.NOT_FOUND, rpcError(null, METHOD_NOT_FOUND, "not found: $uri"))
                 session.method == Method.POST -> handlePost(session)
                 session.method == Method.DELETE -> handleDelete(session)
-                session.method == Method.GET -> handleGet(session)
+                session.method == Method.GET -> response(Status.METHOD_NOT_ALLOWED)
                 else -> response(Status.METHOD_NOT_ALLOWED)
             }
         } catch (t: Throwable) {
@@ -211,63 +170,6 @@ class CloudLinkMcpServer(
         return response(Status.NO_CONTENT)
     }
 
-    /**
-     * GET —— **MCP Streamable HTTP 规范要求的长连接 SSE 流**。
-     *
-     * ## 为什么必须有（2026-11-08 真机事故）
-     *
-     * 规范（2025-03-26 起）：客户端在 `initialize` 之后**必须**开一个 GET 流，
-     * 用来接收服务端主动推送的通知。官方 Kotlin SDK 的
-     * `StreamableHttpClientTransport` 就是这么实现的。
-     *
-     * 之前这里对 GET 直接返回 405，理由是「客户端拿到 405 会回退 legacy SSE」。
-     * **这个假设是错的**，实测后果是：
-     *
-     * | 场景 | 结果 |
-     * |---|---|
-     * | 握手后**立刻**调工具 | ✅ 339ms，工具调用成功 |
-     * | 握手后**等 8 秒**再调 | ❌ transport 崩掉，进程 crash |
-     * | App 里的实际表现 | 30 秒超时，**服务端一条 POST 日志都没有** |
-     *
-     * 405 让 SDK 判定「这个 server 不支持 Streamable HTTP」，transport 被标记为
-     * 不可用；此时模型刚好还在推理（几秒），等它决定调工具时，transport 已经坏了，
-     * 请求**根本发不出去** —— 所以服务端零日志、客户端只能等到超时。
-     *
-     * 「立刻调用能通、隔几秒就坏」这个反差，是定位到这里的决定性线索。
-     *
-     * ## 实现要点
-     *
-     * 规范允许服务端**只发注释行**（`: ping`）保活。CloudLink 目前没有需要主动
-     * 推送的通知（工具结果都是 POST 的直接响应），所以这个流的作用就是：
-     * ① 让客户端的 transport 保持健康；② 传输层保活探测。
-     *
-     * 流必须**一直开着**直到客户端断开，所以这里不能阻塞 serve 线程 ——
-     * NanoHTTPD 每连接一线程，阻塞在这里等于占死一个线程。做法是先返回一个
-     * chunked 响应（响应头立刻发出去），再由后台线程往里写保活注释。
-     */
-    private fun handleGet(session: IHTTPSession): Response {
-        val sid = header(session, HDR_SESSION_ID)
-        if (sid.isNullOrBlank() || !sessions.containsKey(sid)) {
-            // 没有有效会话的 GET 一律 404：客户端会据此认为这个流不存在，
-            // 而不是拿到一个「连上了但没用」的流。
-            return json(Status.NOT_FOUND, rpcError(null, METHOD_NOT_FOUND, "unknown session"))
-        }
-
-        // NanoHTTPD 的 chunked 响应是基于 InputStream 的：它一边从流里读、
-        // 一边按 chunk 发出去。用一根 pipe 把「后台保活线程」和「NanoHTTPD
-        // 的读线程」接起来 —— 后者只管读，前者只管写。
-        val pipeOut = java.io.PipedOutputStream()
-        val pipeIn = java.io.PipedInputStream(pipeOut, SSE_PIPE_BUFFER_BYTES)
-        sseStreams[session] = pipeOut
-
-        val response = NanoHTTPD.newChunkedResponse(Status.OK, MIME_SSE, pipeIn)
-        response.addHeader("Content-Type", MIME_SSE)
-        response.addHeader("Cache-Control", "no-cache")
-        response.addHeader(HDR_SESSION_ID, sid)
-        Log.d(TAG, "GET stream opened session=${sid.take(8)}")
-        return response
-    }
-
     // ------------------------------------------------------------- JSON-RPC
 
     private fun handleRequest(id: Any, method: String, params: JSONObject): JSONObject {
@@ -305,13 +207,26 @@ class CloudLinkMcpServer(
                 //
                 // ⚠️ 长度预算：端侧提示词给本段 800 字符，超了会从中间截断
                 // （clipMiddle），关键句必须排在靠前/靠后的位置。
-                "问「有哪些设备/设备叫什么」「我家连了哪些 IoT 设备」「家里有什么智能家居」" +
+                //
+                // ⚠️ **不要在这里描述工具返回的格式**（「每行一台设备，格式是
+                // 「- 设备名（区域）」」这类）。instructions 是**全局**段落，
+                // 在「工具调用规则」之前对所有工具生效；端侧小模型读到输出格式
+                // 的描述，会当成**自己该输出的东西**，于是凭记忆编出设备名、
+                // 直接回答，一次工具都不调。
+                //
+                // 真机实测（2026-11-08，Qwen2.5-1.5B，同一份提示词）：
+                // | 提示词 | 工具调用 |
+                // |---|---|
+                // | 返回格式写在 instructions 里 | ❌ 0/3，编造「落地灯/床头灯/空调」 |
+                // | 返回格式写在工具描述里 | ✅ 3/3 |
+                //
+                // 返回格式写在对应工具的 description 里（见 [DeviceToolSchema.DESC_LIST]）——
+                // 那时模型已经选中了工具，这段话正好是它读返回时需要的信息。
+                "涉及家庭设备的问题**一律先调用工具**，不要凭记忆直接回答。" +
+                    "问「有哪些设备/设备叫什么」「我家连了哪些 IoT 设备」「家里有什么智能家居」" +
                     "→ 直接调用 ${DeviceToolSchema.LIST}，" +
                     "它**不需要任何参数**，不要反问用户要区域或类型。" +
-                    "它的返回是一份**清单**：每行一台设备，格式是「- 设备名（区域）」。" +
-                    "回答用户时**把这几行原样逐行列出来**，每行一个，" +
-                    "`-` 后面留一个空格，不要合并成一整段，也不要自己编设备。" +
-                    "**device_name 只能照抄清单里的原名，一个字都不能改**：" +
+                    "**device_name 只能照抄工具返回里的原名，一个字都不能改**：" +
                     "不要翻译、不要简写、不要合并两台设备（如把「床尾灯」写成「床灯」）。" +
                     "查某台设备现在的状态 → 调用 ${DeviceToolSchema.GET_STATE}，" +
                     "参数 device_name 填设备名（如 \"落地灯\"）。" +
@@ -322,6 +237,8 @@ class CloudLinkMcpServer(
                     "**你不需要 entity_id，也不需要 domain**：这四个工具都以设备名为入口，" +
                     "服务端会自己定位到正确的实体。" +
                     "同名设备会报错并列出候选，这时加上 area 参数区分即可。" +
+                    "拿到工具返回后**再**转述给用户；转述时按工具返回的原文列，" +
+                    "一条都不能漏，也不要自己编设备。" +
                     "出错时结果文本里有 error_code，按它修正参数，而不是原样重试" +
                     "（INVALID_PARAMS 是类型/写法错，ENTITY_NOT_FOUND 是设备名不存在，" +
                     "或者有同名设备需要用 area 区分）。" +
@@ -542,14 +459,14 @@ class CloudLinkMcpServer(
 
     private fun response(status: Status): Response {
         val r = NanoHTTPD.newFixedLengthResponse(status, MIME_JSON, "")
-        r.addHeader("Allow", "POST, GET, DELETE")
+        r.addHeader("Allow", "POST, DELETE")
         r.addHeader("Connection", "close")
         return r
     }
 
     private fun json(status: Status, body: String): Response {
         val r = NanoHTTPD.newFixedLengthResponse(status, MIME_JSON, body)
-        r.addHeader("Allow", "POST, GET, DELETE")
+        r.addHeader("Allow", "POST, DELETE")
         // **每次响应都关连接**。
         //
         // NanoHTTPD 在 socket 读超时后可能留下一条「僵尸连接」：socket 还开着，
@@ -598,10 +515,8 @@ class CloudLinkMcpServer(
          * 15 秒是常见取值：足够短（中间的 NAT/代理不会判定空闲而断链），
          * 又足够长（一条 60 字节的注释流，1 小时才 1.4KB）。
          */
-        private const val SSE_KEEP_ALIVE_INTERVAL_MS = 15_000L
 
         /** SSE 的 MIME 类型。 */
-        private const val MIME_SSE = "text/event-stream"
 
         /**
          * SSE pipe 的缓冲区大小。
@@ -609,7 +524,6 @@ class CloudLinkMcpServer(
          * 够大，让一次保活写入不会阻塞；又不会大到浪费内存 ——
          * 每个打开的流都有一根 pipe。
          */
-        private const val SSE_PIPE_BUFFER_BYTES = 4096
 
         /** SDK 0.10.0 能说的版本；协商时优先跟客户端走，否则给最新的。 */
         private val SUPPORTED_PROTOCOLS = setOf("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
