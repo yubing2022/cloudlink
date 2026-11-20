@@ -38,7 +38,7 @@ import java.util.concurrent.ConcurrentHashMap
  * 工具调用**完全正常**（`tools/call device_control → ENTITY_NOT_FOUND`，
  * 服务端日志、错误码、候选清单全部到位）。
  *
- * 端口固定在 8731，且**只绑 127.0.0.1**：
+ * 端口固定在 8741，且**只绑 127.0.0.1**：
  *  - 绝不能监听 0.0.0.0，否则同网其它设备都能控制你家设备；
  *  - PalmClaw 的 McpEndpointPolicy 把 loopback 判为免 HTTPS、免 authToken，
  *    所以明文 HTTP 在回环上既可接受也无需鉴权。
@@ -49,7 +49,7 @@ import java.util.concurrent.ConcurrentHashMap
 class CloudLinkMcpServer(
     private val core: DeviceControlCore,
     private val versionName: String = "0.1.0",
-    port: Int = 8731,
+    port: Int = 8741,
 ) : NanoHTTPD(HOST, port) {
 
     /**
@@ -483,7 +483,7 @@ class CloudLinkMcpServer(
     private fun json(status: Status, body: JSONObject): Response = json(status, body.toString())
 
     companion object {
-        const val PORT = 8731
+        const val PORT = 8741
         const val HOST = "127.0.0.1"
         const val PATH = "/mcp"
         const val SERVER_NAME = "cloudlink"

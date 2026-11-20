@@ -218,7 +218,7 @@ ADK 的 KSP 处理器把 `@Tool`/`@Param` 在**编译期**生成 `Tool` 定义�
 | **P2** | 实现 3 个 `@Tool`，委托 `DeviceControlCore`；端到端联调 list → control | 自然语言「打开客厅灯」能解析并真实控制 HA 设备 |
 | **P3** | 聊天 UI（复用或新增）+ 流式输出 + `requireConfirmation` 确认弹窗 | 可见对话与确认交互 |
 | **P4** | 护栏（确认/限流/错误映射）+ 评估 | 在 **Honor 非 GMS 真机** 跑通；覆盖未登录/离线/参数错等错误场景 |
-| **P5（可选）** | 同核心暴露本地 MCP server（127.0.0.1:8731）给 PalmClaw | 与本文档正交，复用 `DeviceControlCore` |
+| **P5（可选）** | 同核心暴露本地 MCP server（127.0.0.1:8741）给 PalmClaw | 与本文档正交，复用 `DeviceControlCore` |
 
 ---
 

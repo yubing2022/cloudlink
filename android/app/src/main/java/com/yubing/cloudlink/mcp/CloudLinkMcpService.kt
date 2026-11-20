@@ -24,7 +24,7 @@ const val ACTION_REFRESH_NOTIFICATION = "com.yubing.cloudlink.mcp.ACTION_REFRESH
  * PalmClaw 那边只会看到连接断开。前台服务至少能保证 App 退到后台后进程仍在。
  * （PalmClaw 自带 McpConnectionRetry，短暂断服能自愈，但能常驻就别让它断。）
  *
- * 端口与绑定地址在 [CloudLinkMcpServer] 里写死为 127.0.0.1:8731 —— 只服务本机的 Agent。
+ * 端口与绑定地址在 [CloudLinkMcpServer] 里写死为 127.0.0.1:8741 —— 只服务本机的 Agent。
  */
 @AndroidEntryPoint
 class CloudLinkMcpService : Service() {
@@ -147,7 +147,7 @@ class CloudLinkMcpService : Service() {
                 "本地 MCP 服务",
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
-                description = "在 127.0.0.1:8731 提供设备控制工具，供本机 Agent 应用调用"
+                description = "在 127.0.0.1:8741 提供设备控制工具，供本机 Agent 应用调用"
                 setSound(null, null)
                 enableVibration(false)
                 setShowBadge(false)

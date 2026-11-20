@@ -49,7 +49,7 @@
             </intent-filter>
         </service>
 
-        <!-- 本地 MCP server（127.0.0.1:8731/mcp）：给本机 PalmClaw 这类
+        <!-- 本地 MCP server（127.0.0.1:8741/mcp）：给本机 PalmClaw 这类
              端侧 Agent 用标准 HTTP MCP 协议调用设备控制能力。
              不对外暴露：只有本机回环能连上，也没给任何 intent-filter。 -->
         <service
@@ -59,7 +59,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="在本机回环地址 127.0.0.1:8731 提供 MCP server，供同设备的 Agent 应用控制 CloudLink 已接入的智能家居设备" />
+                android:value="在本机回环地址 127.0.0.1:8741 提供 MCP server，供同设备的 Agent 应用控制 CloudLink 已接入的智能家居设备" />
         </service>
 
         <!-- 开机 / 本包升级后拉起 MCP 服务。BOOT_COMPLETED 是 Android 12+ 少数

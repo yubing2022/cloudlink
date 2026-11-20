@@ -48,11 +48,11 @@
 │  PalmClaw App (手机)                                          │
 │   编排 / Agent Loop / LLM(云侧 API)                          │
 │        │  HTTP MCP client (Streamable HTTP / SSE, 0.10.0)     │
-│        │  http://127.0.0.1:8731/mcp   (loopback, 免鉴权)     │
+│        │  http://127.0.0.1:8741/mcp   (loopback, 免鉴权)     │
 │        ▼                                                      │
 │  CloudLink App (手机, 同设备)                                  │
 │   ┌──────────────────────────────────────────┐              │
-│   │  CloudLinkMcpServer (127.0.0.1:8731)      │              │
+│   │  CloudLinkMcpServer (127.0.0.1:8741)      │              │
 │   │     └─ DeviceControlCore                  │              │
 │   │          ├─ TokenStore (登录态, 同会话)    │              │
 │   │          └─ ApiService (Retrofit)         │              │
@@ -90,7 +90,7 @@ implementation("io.ktor:ktor-serialization-kotlinx-json:2.x")
 | 文件 | 职责 |
 |---|---|
 | `app/src/main/java/com/yubing/cloudlink/data/mcp/DeviceControlCore.kt` | 从 `CloudLinkCapabilityService` 抽取 `listDevices` / `getState` / `control` 三方法的**全部业务核心**（校验、0 实体过滤、area/domain 过滤与报错、拼写纠错、离线检测、错误码映射）。持有 `api: ApiService` + `tokenStore: TokenStore`，对外暴露三个 `suspend fun`，返回结构化结果对象。 |
-| `app/src/main/java/com/yubing/cloudlink/mcp/CloudLinkMcpServer.kt` | 在 `127.0.0.1:8731` 起 HTTP MCP server，注册 3 个 tool；每个 tool 的 handler 调用 `DeviceControlCore` 对应方法并将结果格式化为 MCP `ToolResult`。 |
+| `app/src/main/java/com/yubing/cloudlink/mcp/CloudLinkMcpServer.kt` | 在 `127.0.0.1:8741` 起 HTTP MCP server，注册 3 个 tool；每个 tool 的 handler 调用 `DeviceControlCore` 对应方法并将结果格式化为 MCP `ToolResult`。 |
 | `app/src/main/java/com/yubing/cloudlink/mcp/CloudLinkMcpService.kt` | 前台 `Service`（或 Application 内常驻协程），负责启动/停止 `CloudLinkMcpServer`；通过 Hilt `@EntryPoint` 注入 `DeviceControlCore`。 |
 
 ### 3.3 核心逻辑抽取（DeviceControlCore）
@@ -118,7 +118,7 @@ implementation("io.ktor:ktor-serialization-kotlinx-json:2.x")
 ```kotlin
 class CloudLinkMcpServer(
     private val core: DeviceControlCore,
-    private val port: Int = 8731
+    private val port: Int = 8741
 ) {
     fun start() {
         // 1. 用 Ktor CIO 在 127.0.0.1 监听 port
@@ -143,7 +143,7 @@ class CloudLinkMcpServer(
 ### 3.5 保活
 
 - 建议实现为**前台 Service**（带常驻通知），避免系统回收；同时监听 App 登录/登出事件，登录后确保 server 启动、登出后停服或拒绝未鉴权调用。
-- 端口固定为 `8731`（与 PalmClaw 配置保持一致；如调整需同步）。
+- 端口固定为 `8741`（与 PalmClaw 配置保持一致；如调整需同步）。
 - PalmClaw 自带 `McpConnectionRetry` 会兜底重连，因此短暂断服可接受，但应尽量保证常驻。
 
 ### 3.6 端口与安全
@@ -236,7 +236,7 @@ Tool name（PalmClaw 会自动加 `mcp_<serverName>_` 前缀；`serverName` 取 
 > 此部分由使用方（在手机上装了 PalmClaw + CloudLink 的用户）完成，CloudLink 维护方无需改动 PalmClaw。
 
 1. 打开 PalmClaw → **Settings → MCP → Add HTTP server**
-2. Server URL：`http://127.0.0.1:8731/mcp`
+2. Server URL：`http://127.0.0.1:8741/mcp`
 3. Auth token：留空（loopback 免鉴权）或填 CloudLink 设置的 local token（若启用）
 4. 保存 → PalmClaw 自动 `initialize` + `tools/list` → 工具列表出现 `mcp_cloudlink_device_*`
 5. 在 PalmClaw 聊天中自然语言指令（如"关掉客厅的灯"），Agent 会自动选择并调用对应 tool。
@@ -248,7 +248,7 @@ Tool name（PalmClaw 会自动加 `mcp_<serverName>_` 前缀；`serverName` 取 
 1. CloudLink Android 改动完成后：`./gradlew assembleDebug`（JDK 17，与现有基线一致）。
 2. `adb install -r <cloudlink-debug.apk>`（USB 直连）。
 3. 打开 CloudLink App **登录一次**（确保 `TokenStore` 有有效 token；MCP server 复用此会话）。
-4. 验证端口监听：`adb shell netstat -tln | grep 8731`（应看到 `127.0.0.1:8731` 处于 LISTEN）。
+4. 验证端口监听：`adb shell netstat -tln | grep 8741`（应看到 `127.0.0.1:8741` 处于 LISTEN）。
 5. PalmClaw 按第 5 节配置 MCP server。
 6. 在 PalmClaw 发一条指令，确认：
    - PalmClaw 日志/状态显示工具被调用；
@@ -282,7 +282,7 @@ Tool name（PalmClaw 会自动加 `mcp_<serverName>_` 前缀；`serverName` 取 
 ## 9. 验收标准（维护方自测 + 联调）
 
 - [ ] CloudLink Debug 包编译通过（JDK 17）。
-- [ ] 安装并登录后，`127.0.0.1:8731` 处于 LISTEN 且仅绑回环。
+- [ ] 安装并登录后，`127.0.0.1:8741` 处于 LISTEN 且仅绑回环。
 - [ ] PalmClaw 添加该 HTTP MCP server 后，`tools/list` 返回 3 个 `cloudlink_device_*` 工具。
 - [ ] 在 PalmClaw 中执行"列出设备 / 查状态 / 控制开关"三类指令，设备侧产生预期变化。
 - [ ] 未登录 CloudLink 时，MCP 工具调用返回 `NOT_AUTHENTICATED` 而非崩溃。

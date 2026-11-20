@@ -120,7 +120,7 @@ class SettingsViewModel @Inject constructor(
      * Android 15+ 的 App Freezer 与 ColorOS 的「智能后台管理」会把切到后台的 App
      * **冻结** —— 线程被挂起，socket 还在 LISTEN、进程与前台服务都活着，
      * 但没人再 accept 新连接。本机（OPPO / ColorOS 17 / Android 17）实测：
-     * App 切到后台约 25 秒后，127.0.0.1:8731 的请求全部超时（手机本机直连
+     * App 切到后台约 25 秒后，127.0.0.1:8741 的请求全部超时（手机本机直连
      * 同样超时，排除 adb 隧道因素）；拉回前台立刻恢复（7ms 返回）。
      * 保持前台 40 秒则一直正常 —— 说明触发条件是「切后台」而非时间或息屏。
      *
